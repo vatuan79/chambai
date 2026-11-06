@@ -563,7 +563,7 @@ img.namethumb{display:block;height:24px;max-width:170px;border-radius:3px;border
 // ================= Storage (IndexedDB, fallback localStorage) =================
 const LSKEY = 'chamtn_v1';
 let storageMode = 'idb';
-function blankDB(){ return { v: 2, classes: [], tests: [], cur: null, settings: { school: 'Trường THPT Chuyên Nguyễn Đình Chiểu', title: '', sens: 0.25, aiKey: '', aiModel: 'gemini-flash-latest', aiAuto: true, doubleMode: 'ask', paper: 'A4' } }; }
+function blankDB(){ return { v: 2, classes: [], tests: [], cur: null, settings: { school: 'Trường THPT Chuyên Nguyễn Đình Chiểu', title: '', sens: 0.25, aiKey: '', aiModel: 'gemini-flash-latest', aiAuto: false, doubleMode: 'ask', paper: 'A4', batchV: 1 } }; }
 let DB = blankDB();
 const idb = {
   db: null,
@@ -580,6 +580,7 @@ async function loadDB(){
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
 }
 function migrate(){
+  if (!DB.settings.batchV) { DB.settings.aiAuto = false; DB.settings.batchV = 1; }
   DB.tests.forEach(t => { if (!t.essay) t.essay = { on: false, items: [] }; t.results.forEach(r => { if (r.name == null) r.name = ''; }); });
 }
 let saveTimer = null;
@@ -773,7 +774,7 @@ function renderScan(){
       <div class="muted" style="margin-top:4px">TN ${t.numQ} câu (${fmt(t.maxScore)}đ)${t.essay.on ? ` + TL ${t.essay.items.length} câu (${fmt(essayMax(t))}đ)` : ''} · mã đề: ${codes.length ? codes.map(esc).join(', ') : '—'}</div>
       ${!codes.length ? `<div class="warnbox">Bài này chưa có đáp án. Vào <b>Bài KT</b> để nhập.</div>` : ''}
       ${!aiReady() ? `<div class="aibox">🤖 Chưa bật AI đọc chữ viết tay. Vào <b>Cài đặt</b> để nhập khóa Gemini.</div>` : ''}
-      ${pendTL ? `<div class="warnbox">${pendTL} bài chưa chấm tự luận — xem ở tab <b>Kết quả</b>.</div>` : ''}</div>
+      ${t.results.some(r => !r.name && r.nameImg) || pendTL ? `<div class="aibox">Chụp hết phiếu xong, vào tab <b>Kết quả</b> bấm <b>🤖 Bắt đầu đọc tất cả</b> để AI đọc tên${t.essay.on ? ' và chấm tự luận' : ''} 1 lượt.</div>` : ''}</div>
     <button class="btn big" onclick="$('#fileCam').click()" ${codes.length ? '' : 'disabled'}>📷 Chụp phiếu trả lời</button>
     <div style="height:10px"></div>
     <button class="btn big sec" onclick="$('#fileMulti').click()" ${codes.length ? '' : 'disabled'}>🖼️ Chọn nhiều ảnh phiếu có sẵn</button>
@@ -799,7 +800,7 @@ function renderReview(){
   if (r.nameState === 'loading') aiName = `<div class="aibox"><span class="spin"></span> AI đang đọc tên…</div>`;
   else if (r.nameState === 'error') aiName = `<div class="aibox">${esc(r.nameErr)} <button class="btn sm ai" style="margin-top:6px" onclick="readName()">🤖 AI đọc lại</button></div>`;
   else if (r.nameState === 'done') aiName = `<div class="aibox">🤖 AI đọc: “<b>${esc(r.aiRaw || '?')}</b>”${st ? ` → khớp <b>${esc(st.name)}</b>` : (cls ? ' — không khớp ai trong lớp, thầy chọn lại giúp' : '')}</div>`;
-  else if (r.nameImg && aiReady()) aiName = `<button class="btn sm ai sec" style="margin-top:6px" onclick="readName()">🤖 AI đọc tên</button>`;
+  else if (r.nameImg && aiReady()) aiName = `<div class="muted" style="margin-top:6px">🤖 Tên sẽ được AI đọc <b>1 lượt cho cả lớp</b> ở tab Kết quả — thầy cứ Lưu rồi chụp phiếu tiếp. <button class="btn sm ai sec" onclick="readName()">Đọc ngay</button></div>`;
   const chips = [];
   for (let i = 0; i < t.numQ; i++) {
     const a = r.answers[i] || '_', k = kf ? kf.key[i] : '';
@@ -854,6 +855,7 @@ function renderEssayBlock(t, r){
   if (e.photos && e.photos.length) h += `<div class="thumbs">${e.photos.map((p, i) => `<img src="${p}" onclick="if(confirm('Xoá ảnh trang ${i + 1}?')){review.essay.photos.splice(${i},1);render()}">`).join('')}</div>`;
   h += `<div class="row"><button class="btn sm sec" onclick="$('#fileEssayCam').click()">📷 Chụp trang${e.photos && e.photos.length ? ' tiếp' : ' bài làm'}</button><button class="btn sm sec" onclick="$('#fileEssayPick').click()">🖼️ Chọn ảnh</button>
     ${e.photos && e.photos.length ? `<button class="btn sm ai" onclick="gradeEssay()" ${e.state === 'loading' ? 'disabled' : ''}>🤖 AI chấm${e.graded && e.by === 'ai' ? ' lại' : ''}</button>` : ''}</div>`;
+  if (e.photos && e.photos.length && !e.graded && e.state !== 'loading') h += `<div class="muted" style="margin-top:6px">Đã có ${e.photos.length} trang. Thầy cứ <b>Lưu</b> — AI sẽ chấm tự luận <b>1 lượt cho cả lớp</b> ở tab Kết quả (hoặc bấm “AI chấm” để chấm ngay bài này).</div>`;
   if (e.state === 'loading') h += `<div class="aibox"><span class="spin"></span> AI đang đọc chữ viết tay và chấm bài… (khoảng 10–60 giây) <span id="aiProg" class="muted">${esc(aiProgress)}</span><div style="margin-top:6px"><button class="btn sm red" onclick="cancelAI()">Huỷ</button></div></div>`;
   if (e.state === 'error') h += `<div class="aibox">${esc(e.err)}</div>`;
   if (!aiReady()) h += `<div class="aibox">🤖 Nhập khóa Gemini ở tab Cài đặt để AI đọc và gợi ý điểm. Hoặc thầy tự nhập điểm bên dưới.</div>`;
@@ -1024,11 +1026,16 @@ function onBackOnline(){
   if (review.nameState === 'error' && /mạng/.test(review.nameErr || '')) readName();
   if (review.essay && review.essay.state === 'error' && /mạng/.test(review.essay.err || '')) gradeEssay();
 }
+// essay photos kept per result so AI can grade the whole class in one run
+const photoMem = {};
+async function putPhotos(id, photos){ photoMem[id] = photos; if (storageMode === 'idb') { try { await idb.set('essay:' + id, photos); delete photoMem[id]; } catch (e) {} } }
+async function getPhotos(id){ if (photoMem[id]) return photoMem[id]; if (storageMode === 'idb') { try { return (await idb.get('essay:' + id)) || []; } catch (e) {} } return []; }
+async function delPhotos(id){ delete photoMem[id]; if (storageMode === 'idb') { try { await idb.set('essay:' + id, null); } catch (e) {} } }
+async function movePhotos(a, b){ const p = await getPhotos(a); if (p && p.length) { await putPhotos(b, p); await delPhotos(a); } }
 async function addEssayPhotos(files){
   if (!review || !review.essay) return;
-  for (const f of files) { try { const cv = await loadImage(f, 1700); review.essay.photos.push(cv.toDataURL('image/jpeg', 0.82)); } catch (e) { toast('Không mở được ảnh'); } }
+  for (const f of files) { try { const cv = await loadImage(f, 1600); review.essay.photos.push(cv.toDataURL('image/jpeg', 0.78)); } catch (e) { toast('Không mở được ảnh'); } }
   rerenderKeep();
-  if (aiReady() && DB.settings.aiAuto && navigator.onLine && review.essay.photos.length && !review.essay.graded) toast('Chụp thêm trang nếu còn, rồi bấm “🤖 AI chấm”', 3000);
 }
 async function gradeEssay(){
   const r = review, e = r.essay; if (!e || !e.photos.length) return;
@@ -1050,12 +1057,14 @@ function saveReview(){
   if (!keyFor(t, r.made)) { toast('Chưa có đáp án cho mã đề này'); return; }
   const pend = Object.keys(r.marks || {}).map(Number).filter(q => markNeedsReview(t, r, q));
   if (pend.length && !confirm(`Còn ${pend.length} câu tô 2 ô chưa xem (câu ${pend.map(q => q + 1).join(', ')}).\nLưu theo kết quả app đọc (tô 2 ô = không tính)?`)) return;
-  if (!name && !confirm('Bài này chưa có tên học sinh (vẫn lưu ảnh tên viết tay). Lưu luôn?')) return;
+  if (!name && !r.nameImg && !confirm('Bài này chưa có tên học sinh. Lưu luôn?')) return;
   t.results = t.results.filter(x => !(x.id === r.editId || (name && norm(x.name) === norm(name))));
   const old = r.editOld || {};
-  const essay = r.essay ? { items: r.essay.items, overall: r.essay.overall || '', graded: !!r.essay.graded, by: r.essay.by || '' } : old.essay;
+  const essay = r.essay ? { items: r.essay.items, overall: r.essay.overall || '', graded: !!r.essay.graded, by: r.essay.by || '', photos: 0 } : old.essay;
   const marks = {}; Object.keys(r.marks || {}).forEach(q => { const m = r.marks[q]; marks[q] = { type: m.type, cands: m.cands, picked: m.picked, resolved: m.resolved == null ? null : m.resolved, img: m.img || '' }; });
   const rec = { id: uid(), name, made: keyFor(t, r.made).made, answers: r.answers, nameImg: r.nameImg || old.nameImg || '', essay, marks, time: Date.now() };
+  if (r.essay && r.essay.photos && r.essay.photos.length) { rec.essay.photos = r.essay.photos.length; putPhotos(rec.id, r.essay.photos); }
+  else if (old.essay && old.essay.photos && old.id) { rec.essay = rec.essay || {}; rec.essay.photos = old.essay.photos; movePhotos(old.id, rec.id); }
   t.results.push(rec); save();
   const g = grade(t, rec);
   toast(`Đã lưu: ${name || '(chưa có tên)'} — ${fmt(g.total)} điểm${g.tlPending ? ' (chưa có TL)' : ''}`);
@@ -1100,8 +1109,12 @@ function renderResults(){
   const noName = rows.filter(r => !r.name && r.nameImg).length, pendTL = rows.filter(r => r.tlPending).length;
   let h = `<div class="card"><div class="row"><div class="grow"><b>${esc(t.name)}</b><div class="muted">${rows.length} bài · thang ${fmt(mx)}</div></div><button class="btn sm" onclick="exportXlsx()" ${rows.length ? '' : 'disabled'}>⬇️ Xuất Excel</button></div>
      <div class="stats" style="margin-top:10px"><div><b>${fmt(avg)}</b><span>Trung bình</span></div><div><b>${sc.length ? fmt(Math.max(...sc)) : '–'}</b><span>Cao nhất</span></div><div><b>${sc.length ? fmt(Math.min(...sc)) : '–'}</b><span>Thấp nhất</span></div><div><b>${sc.length ? Math.round(sc.filter(x => x / mx >= .5).length / sc.length * 100) + '%' : '–'}</b><span>Đạt ≥ 50%</span></div></div>
-     ${noName ? `<div class="aibox">${noName} bài chưa có tên. <button class="btn sm ai" style="margin-left:4px" onclick="bulkNames()" ${bulkBusy ? 'disabled' : ''}>${bulkBusy ? '<span class="spin w"></span> Đang đọc…' : '🤖 AI đọc tên tất cả'}</button></div>` : ''}
-     ${pendTL ? `<div class="warnbox">${pendTL} bài chưa chấm tự luận — chạm vào từng bài, chọn “Chấm tự luận”.</div>` : ''}</div>
+     ${(() => { const tlReady = rows.filter(r => r.tlPending && r.essay && r.essay.photos).length, tlNoPhoto = pendTL - tlReady;
+        if (!noName && !tlReady && !bulkBusy) return tlNoPhoto ? `<div class="warnbox">${tlNoPhoto} bài chưa có ảnh tự luận — chạm vào bài, chọn “Chấm tự luận” để chụp.</div>` : '';
+        return `<div class="aibox"><b>🤖 AI đọc 1 lượt:</b> ${[noName ? noName + ' tên học sinh' : '', tlReady ? tlReady + ' bài tự luận' : ''].filter(Boolean).join(' + ')}
+          ${bulkBusy ? `<div style="margin-top:6px"><span class="spin"></span> <span id="bulkProg">${esc(bulkProg)}</span> <span id="aiProg" class="muted">${esc(aiProgress)}</span></div><button class="btn sm red" style="margin-top:6px" onclick="bulkStop=true;cancelAI()">Dừng</button>`
+            : `<div style="margin-top:6px"><button class="btn ai" onclick="bulkAI()" ${aiReady() ? '' : 'disabled'}>🤖 Bắt đầu đọc tất cả</button></div>${aiReady() ? '' : '<div class="muted">Cần nhập khóa Gemini ở Cài đặt.</div>'}`}
+          ${tlNoPhoto ? `<div class="muted" style="margin-top:6px">${tlNoPhoto} bài chưa có ảnh tự luận.</div>` : ''}</div>`; })()}</div>
      <div class="seg"><button class="${resView === 'list' ? 'on' : ''}" onclick="resView='list';render()">Danh sách điểm</button><button class="${resView === 'stat' ? 'on' : ''}" onclick="resView='stat';render()">Thống kê câu TN</button></div>`;
   if (!rows.length) return h + `<div class="card muted">Chưa có bài nào. Vào tab <b>Chấm</b> để chụp phiếu.</div>`;
   if (resView === 'list') {
@@ -1134,6 +1147,54 @@ function questionStats(t, rows, made){
   }
   return out;
 }
+let bulkProg = '', bulkStop = false;
+function setBulk(t){ bulkProg = t; const el = document.getElementById('bulkProg'); if (el) el.textContent = t; }
+async function aiReadNamesBatch(t, list){   // list: [{id, img}] -> {id: {raw, student}}
+  const cls = classOf(t), names = cls ? cls.students.map(s => s.name) : [];
+  const prompt = `Có ${list.length} ảnh, mỗi ảnh là ô "HỌ VÀ TÊN" do một học sinh Việt Nam viết tay (bỏ qua chữ in sẵn "HỌ VÀ TÊN").
+Đọc họ tên trong TỪNG ảnh theo đúng thứ tự ảnh (ảnh 1, ảnh 2, …), viết đúng dấu tiếng Việt.
+${names.length ? 'Danh sách lớp:\n' + names.map((n, i) => (i + 1) + '. ' + n).join('\n') + '\nNếu chữ viết khớp một tên trong danh sách thì "match" là đúng tên đó, ngược lại "".' : '"match" để "".'}
+Chỉ trả về JSON: {"names":[{"i":1,"name":"","match":""}]} — đủ ${list.length} phần tử.`;
+  const parts = [{ text: prompt }];
+  list.forEach((x, i) => { parts.push({ text: 'Ảnh ' + (i + 1) + ':' }); parts.push({ inline_data: { mime_type: 'image/jpeg', data: b64(x.img) } }); });
+  const j = await gemini(parts), out = {};
+  (j.names || []).forEach((n, k) => {
+    const idx = (+n.i || k + 1) - 1, x = list[idx]; if (!x) return;
+    let st = n.match && cls ? cls.students.find(s => norm(s.name) === norm(n.match)) : null;
+    if (!st) st = matchName(t, n.name);
+    out[x.id] = { raw: String(n.name || '').trim(), student: st };
+  });
+  return out;
+}
+async function bulkAI(){
+  const t = curTest(); if (!aiReady()) { toast('Chưa nhập khóa Gemini (tab Cài đặt)'); return; }
+  bulkBusy = true; bulkStop = false; render();
+  let okN = 0, okE = 0, fail = null;
+  try {
+    // names: 15 per request
+    const todo = t.results.filter(r => !r.name && r.nameImg);
+    for (let i = 0; i < todo.length && !bulkStop; i += 15) {
+      const chunk = todo.slice(i, i + 15);
+      setBulk(`Đang đọc tên ${Math.min(i + chunk.length, todo.length)}/${todo.length}…`);
+      const res = await aiReadNamesBatch(t, chunk.map(r => ({ id: r.id, img: r.nameImg })));
+      chunk.forEach(r => { const o = res[r.id]; if (!o) return; const nm = o.student ? o.student.name : o.raw; if (nm && !t.results.find(x => x !== r && norm(x.name) === norm(nm))) { r.name = nm; okN++; } });
+      save();
+    }
+    // essays: one request per student
+    const ess = t.results.filter(r => grade(t, r).tlPending && r.essay && r.essay.photos);
+    for (let i = 0; i < ess.length && !bulkStop; i++) {
+      const r = ess[i]; setBulk(`Đang chấm tự luận ${i + 1}/${ess.length}${r.name ? ' — ' + r.name : ''}…`);
+      const ph = await getPhotos(r.id); if (!ph || !ph.length) continue;
+      const out = await aiGradeEssay(t, ph);
+      r.essay = Object.assign({}, r.essay, { items: out.items, overall: out.overall, graded: true, by: 'ai' });
+      if (!r.name && out.studentName) { const st = matchName(t, out.studentName); r.name = st ? st.name : out.studentName; }
+      okE++; save();
+    }
+  } catch (e) { fail = aiMsg(e); }
+  bulkBusy = false; setBulk(''); save(); render();
+  const msg = [okN ? `đọc ${okN} tên` : '', okE ? `chấm ${okE} bài tự luận` : ''].filter(Boolean).join(', ');
+  toast((msg ? 'AI đã ' + msg + '. ' : '') + (fail ? fail + ' Bấm lại để làm tiếp phần còn lại.' : (msg ? '' : 'Không có gì cần đọc.')), 5000);
+}
 async function bulkNames(){
   const t = curTest(); if (!aiReady()) { toast('Chưa nhập khóa Gemini (tab Cài đặt)'); return; }
   bulkBusy = true; render(); let ok = 0, fail = null;
@@ -1156,13 +1217,14 @@ function openResult(id){
   m.addEventListener('click', e => {
     const x = e.target.dataset.x;
     if (e.target === m || x === 'close') m.remove();
-    if (x === 'del' && confirm('Xoá bài của ' + (r.name || 'học sinh này') + '?')) { t.results = t.results.filter(y => y.id !== id); save(); m.remove(); render(); }
+    if (x === 'del' && confirm('Xoá bài của ' + (r.name || 'học sinh này') + '?')) { t.results = t.results.filter(y => y.id !== id); delPhotos(id); save(); m.remove(); render(); }
     if (x === 'edit' || x === 'essay') {
       m.remove();
       const cls = classOf(t), st = cls && cls.students.find(s => s.name === r.name);
       review = { mode: 'grade', canvas: null, res: null, made: r.made, answers: r.answers, name: st ? '' : r.name, studentName: st ? st.name : '', nameImg: r.nameImg, editId: r.id, editOld: r, marks: JSON.parse(JSON.stringify(r.marks || {})),
         essay: t.essay.on ? JSON.parse(JSON.stringify(Object.assign({ photos: [] }, r.essay || {}, { photos: [] }))) : null };
       if (review.essay && !review.essay.items) review.essay = null;
+      if (review.essay && r.essay && r.essay.photos) getPhotos(r.id).then(ph => { if (review && review.editId === r.id && review.essay) { review.essay.photos = ph || []; rerenderKeep(); } });
       tab = 'scan'; render(); if (x === 'essay') setTimeout(() => { const el = document.querySelector('.essayitem, .thumbs'); (el || $('#main')).scrollIntoView({ block: 'center' }); }, 50);
     }
   });
@@ -1559,7 +1621,7 @@ function renderSettings(){
     <div class="row"><input type="text" id="aiKey" class="grow" style="flex:1;-webkit-text-security:disc" value="${esc(s.aiKey)}" placeholder="Dán khóa (dạng AQ.… hoặc AIza…)" autocomplete="off" autocapitalize="off" spellcheck="false" data-lpignore="true"><button class="btn sm sec" onclick="const i=$('#aiKey');i.style.webkitTextSecurity=i.style.webkitTextSecurity==='none'?'disc':'none'">👁</button></div>
     <div class="row" style="margin-top:8px"><button class="btn sm" onclick="saveKey()">Lưu khóa</button><button class="btn sm ai sec" onclick="testKey()">Kiểm tra kết nối</button></div>
     ${keyTest ? `<div class="${keyTest.startsWith('✅') ? 'okbox' : 'aibox'}">${esc(keyTest)}</div>` : ''}
-    <label class="row" style="gap:8px;margin-top:10px"><input type="checkbox" ${s.aiAuto ? 'checked' : ''} onchange="DB.settings.aiAuto=this.checked;save()" style="width:20px;height:20px"> Tự động cho AI đọc tên ngay sau khi chụp phiếu</label>
+    <label class="row" style="gap:8px;margin-top:10px"><input type="checkbox" ${s.aiAuto ? 'checked' : ''} onchange="DB.settings.aiAuto=this.checked;save()" style="width:20px;height:20px"> Đọc tên ngay sau mỗi phiếu (chậm hơn — mặc định: chụp hết rồi AI đọc 1 lượt ở tab Kết quả)</label>
     <details style="margin-top:10px"><summary class="muted">Cách lấy khóa Gemini miễn phí</summary><ol class="muted" style="padding-left:18px;margin:6px 0">
       <li>Mở <b>aistudio.google.com/apikey</b>, đăng nhập bằng Gmail.</li><li>Bấm <b>Create API key</b> → copy khóa (dạng AQ.… hoặc AIza…).</li><li>Dán vào ô trên → <b>Lưu khóa</b> → <b>Kiểm tra kết nối</b>.</li></ol>
       <div class="muted">Khóa chỉ lưu trong máy này. Gói miễn phí giới hạn số lượt mỗi phút/ngày; Google có thể dùng dữ liệu gói miễn phí để cải thiện dịch vụ.</div></details>
