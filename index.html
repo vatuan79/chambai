@@ -112,6 +112,8 @@ img.namethumb{display:block;height:24px;max-width:170px;border-radius:3px;border
 <input type="file" id="fileEssayCam" accept="image/*" capture="environment" class="hidden">
 <input type="file" id="fileEssayPick" accept="image/*" multiple class="hidden">
 <input type="file" id="fileBackup" accept=".json,application/json" class="hidden">
+<input type="file" id="fileKeyXlsx" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" class="hidden">
+<input type="file" id="fileKeyPhoto" accept="image/*" multiple class="hidden">
 <input type="file" id="fileClass" accept=".xlsx,.xls,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" class="hidden">
 <script>
 /* OMR core: sheet layout, printable SVG, and photo recognition.
@@ -596,7 +598,7 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&a
 function toast(msg, ms){ const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), ms || 2400); }
 function curTest(){ return DB.tests.find(t => t.id === DB.cur) || null; }
 function classOf(t){ return t ? DB.classes.find(c => c.id === t.classId) || null : null; }
-function parseKey(s){ s = String(s || '').toUpperCase().replace(/\d+\s*[\.\):\-]?/g, ' '); return (s.match(/[ABCD]/g) || []).join(''); }
+function parseKey(s){ s = String(s || '').toUpperCase().replace(/\d+\s*[\.\):\-]?/g, ' '); return (s.match(/[ABCD?]/g) || []).join(''); }
 const r2 = x => Math.round(x * 100) / 100;
 const q25 = x => Math.round(x * 4) / 4;
 const fmt = x => x == null || x === '' ? '–' : String(r2(x)).replace('.', ',');
@@ -760,8 +762,7 @@ function renderReview(){
   const g = grade(t, r), kf = keyFor(t, r.made), cls = classOf(t);
   const st = r.studentName ? cls && cls.students.find(s => s.name === r.studentName) : null;
   const warns = [];
-  if (!kf) warns.push(`Không có đáp án cho mã đề "${esc(r.made)}". Hãy sửa mã đề.`);
-  else if (!kf.exact) warns.push(`Mã đề đọc được "${esc(r.made)}" không khớp — đang dùng đáp án mã ${esc(kf.made)}.`);
+  if (kf && !kf.exact) warns.push(`Mã đề đọc được "${esc(r.made)}" không khớp — đang dùng đáp án mã ${esc(kf.made)} (bài chỉ có 1 mã đề).`);
   const multi = [...r.answers].map((c, i) => c === '*' && !(r.marks && r.marks[i]) ? i + 1 : 0).filter(Boolean);
   if (multi.length) warns.push(`Câu tô 2 ô trở lên (tính sai): ${multi.join(', ')}.`);
   const curName = r.studentName || r.name;
@@ -792,6 +793,7 @@ function renderReview(){
     ${cls ? `<label class="f">Học sinh</label><select onchange="review.studentName=this.value;review.name='';render()"><option value="">— chọn học sinh —</option>${opts}</select>` : ''}
     ${!st ? `<label class="f">${cls ? 'Hoặc gõ họ tên' : 'Họ tên học sinh'}</label><input type="text" value="${esc(r.name || '')}" onchange="review.name=this.value.trim();render()">` : ''}
     <div class="row" style="margin-top:6px"><div style="width:90px"><label class="f">Mã đề</label><input type="text" inputmode="numeric" value="${esc(r.made)}" onchange="review.made=this.value.trim();render()"></div></div>
+    ${renderMadePicker(t, r)}
     ${warns.map(w => `<div class="warnbox">⚠️ ${w}</div>`).join('')}
   </div>
   ${renderMarksBlock(t, r)}
@@ -801,6 +803,24 @@ function renderReview(){
   <div class="card"><h3 style="margin-top:0">Trắc nghiệm <span class="muted" style="font-weight:400">— chạm vào câu để sửa nếu app đọc sai</span></h3><div class="grid" id="chips">${chips.join('')}</div></div>
   ${r.canvas ? `<div class="card"><h3 style="margin-top:0">Ảnh đã nhận dạng</h3><canvas class="photo" id="cv"></canvas>
     <div class="muted" style="margin-top:6px">🟩 đúng · 🟥 sai · ⭕ xanh = đáp án đúng · 🟦 mã đề</div></div>` : ''}`;
+}
+function madeMatches(t, answers){
+  return Object.keys(t.keys).filter(k => t.keys[k]).sort().map(code => {
+    const key = t.keys[code]; let m = 0, n = 0;
+    for (let i = 0; i < t.numQ; i++) { const a = answers[i]; if (/[ABCD]/.test(a || '')) { n++; if (a === key[i]) m++; } }
+    return { code, m, n };
+  });
+}
+function renderMadePicker(t, r){
+  const ms = madeMatches(t, r.answers); if (ms.length < 2 && t.keys[r.made]) return '';
+  const exact = !!t.keys[r.made];
+  const best = ms.slice().sort((a, b) => b.m - a.m)[0], second = ms.slice().sort((a, b) => b.m - a.m)[1];
+  const clear = best && best.m > 0 && (!second || best.m - second.m >= Math.max(3, t.numQ * 0.1));
+  let h = `<div class="${exact ? '' : 'warnbox'}" style="${exact ? 'margin-top:6px' : ''}">`;
+  if (!exact) h += `⚠️ ${/^[_*]*$/.test(r.made || '') || !r.made ? 'Học sinh chưa tô mã đề' : `Mã đề “${esc(r.made)}” không có trong bài`} — thầy chọn mã đề để chấm:${clear ? `<br>💡 Gợi ý: <b>${esc(best.code)}</b> (bài làm khớp ${best.m}/${t.numQ} câu)` : ''}`;
+  else h += `<span class="muted">Đổi mã đề:</span>`;
+  h += `<div class="row" style="margin-top:6px">` + ms.map(x => `<button class="btn sm ${x.code === r.made ? '' : 'sec'}" onclick="review.made='${esc(x.code)}';rerenderKeep()">${esc(x.code)} <span style="font-weight:400;opacity:.8">· khớp ${x.m}</span></button>`).join('') + `</div></div>`;
+  return h;
 }
 function renderEssayBlock(t, r){
   const e = r.essay || (r.essay = { photos: [], items: t.essay.items.map((it, i) => ({ label: it.label || 'Câu ' + (i + 1), max: +it.max || 0, score: '', transcript: '', comment: '' })), graded: false });
@@ -1227,8 +1247,13 @@ function renderTestEditor(){
     <h3>Phần trắc nghiệm</h3>
     <div class="row"><div class="grow"><label class="f">Số câu (1–50)</label><input type="number" id="tNum" min="1" max="50" value="${e.numQ}" inputmode="numeric"></div>
     <div class="grow"><label class="f">Điểm phần trắc nghiệm</label><input type="number" id="tMax" min="0.25" step="0.25" value="${e.maxScore}" inputmode="decimal"></div></div>
-    <div class="muted" style="margin-top:6px">Đáp án theo mã đề — gõ liền (ABCDA…) hoặc 1A 2B 3C…</div>
-    ${e.keysList.map((k, i) => { const n = parseKey(k.text).length; return `<div class="keybox"><div class="row"><div style="width:100px"><label class="f" style="margin-top:0">Mã đề</label><input type="text" inputmode="numeric" value="${esc(k.made)}" data-km="${i}"></div><div class="grow" style="text-align:right"><span class="pill ${n === +e.numQ ? 'ok' : 'warn'}" id="kc${i}">${n}/${e.numQ} câu</span></div></div>
+    <div class="keybox" style="background:var(--pri2);border-color:#c6d8ea"><b>Nhập đáp án nhanh</b>
+      <div class="row" style="margin-top:6px"><button class="btn sm" onclick="syncEditor();$('#fileKeyXlsx').click()">📂 Từ file Excel</button><button class="btn sm ai" onclick="syncEditor();$('#fileKeyPhoto').click()">📷 Chụp bảng đáp án (AI)</button></div>
+      <div class="row" style="margin-top:6px"><button class="btn sm sec" onclick="syncEditor();downloadKeyTemplate()">⬇️ Tải file Excel mẫu</button></div>
+      <div class="muted" style="margin-top:6px">File mẫu: cột A là số câu, mỗi cột tiếp theo là một mã đề. Ảnh chụp: bảng đáp án in trong đề, file Word, viết tay… nhiều mã đề cùng lúc đều được (cần có mạng).</div>
+      ${keyImportBusy ? `<div class="aibox"><span class="spin"></span> AI đang đọc bảng đáp án…</div>` : ''}</div>
+    <div class="muted" style="margin-top:6px">Hoặc gõ trực tiếp — gõ liền (ABCDA…) hoặc 1A 2B 3C…</div>
+    ${e.keysList.map((k, i) => { const n = parseKey(k.text).length; return `<div class="keybox"><div class="row"><div style="width:100px"><label class="f" style="margin-top:0">Mã đề</label><input type="text" inputmode="numeric" value="${esc(k.made)}" data-km="${i}"></div><div class="grow" style="text-align:right"><span class="pill ${n === +e.numQ && !parseKey(k.text).includes('?') ? 'ok' : 'warn'}" id="kc${i}">${n}/${e.numQ} câu${parseKey(k.text).includes('?') ? ' · có câu “?”' : ''}</span></div></div>
       <label class="f">Đáp án</label><textarea data-kt="${i}" style="min-height:60px;font-family:monospace;letter-spacing:1px">${esc(k.text)}</textarea>
       <div class="row" style="margin-top:6px"><button class="btn sm sec" onclick="syncEditor();$('#fileKey').click()">📷 Quét phiếu đáp án</button><button class="btn sm red" onclick="syncEditor();editing.keysList.splice(${i},1);render()">Xoá mã đề</button></div></div>`; }).join('')}
     <button class="btn sm sec" style="margin-top:10px" onclick="syncEditor();editing.keysList.push({made:'',text:''});render()">+ Thêm mã đề</button>
@@ -1245,7 +1270,8 @@ function renderTestEditor(){
 document.addEventListener('input', e => {
   if (e.target.dataset && e.target.dataset.kt != null && editing) {
     const i = +e.target.dataset.kt, n = parseKey(e.target.value).length, el = $('#kc' + i), need = +($('#tNum') ? $('#tNum').value : editing.numQ);
-    if (el) { el.textContent = `${n}/${need} câu`; el.className = 'pill ' + (n === need ? 'ok' : 'warn'); }
+    const q = parseKey(e.target.value).includes('?');
+    if (el) { el.textContent = `${n}/${need} câu` + (q ? ' · có câu “?”' : ''); el.className = 'pill ' + (n === need && !q ? 'ok' : 'warn'); }
   }
 });
 function syncEditor(){
@@ -1270,14 +1296,96 @@ function saveTest(){
     if (!k.made && !key) continue;
     if (!k.made) { toast('Có đáp án chưa ghi mã đề'); return; }
     if (key.length !== e.numQ) probs.push(`Mã ${k.made}: ${key.length}/${e.numQ} câu`);
+    if (key.includes('?')) probs.push(`Mã ${k.made}: câu ${[...key].map((c, i) => c === '?' ? i + 1 : 0).filter(Boolean).join(', ')} chưa có đáp án (dấu ?)`);
     keys[k.made] = key;
   }
   if (e.essay.on && !e.essay.items.length) e.essay.on = false;
-  if (probs.length && !confirm('Đáp án chưa đủ số câu:\n' + probs.join('\n') + '\n\nVẫn lưu?')) return;
+  if (probs.length && !confirm('Đáp án chưa hoàn chỉnh:\n' + probs.join('\n') + '\n\nVẫn lưu?')) return;
   const obj = { id: e.id || uid(), name: e.name, classId: e.classId, numQ: e.numQ, maxScore: e.maxScore, keys, results: e.results || [], essay: { on: !!e.essay.on, items: e.essay.items.map(it => ({ label: it.label, max: +it.max || 0, rubric: it.rubric || '' })), note: e.essay.note || '' } };
   const i = DB.tests.findIndex(t => t.id === obj.id);
   if (i >= 0) DB.tests[i] = obj; else DB.tests.push(obj);
   DB.cur = obj.id; editing = null; save(); toast('Đã lưu bài kiểm tra'); tab = 'scan'; render();
+}
+// ---------- answer-key import ----------
+let keyImportBusy = false;
+const codeLike = v => { const m = /^\s*(?:m[ãa]\s*(?:đ|d)[ềe]\s*[:\-]?\s*)?(\d{1,4})\s*$/i.exec(String(v || '')); return m ? m[1] : null; };
+const letter = v => { const m = /^\s*([ABCDabcd])\s*$/.exec(String(v || '')); return m ? m[1].toUpperCase() : null; };
+function keysFromRows(rows){
+  const keys = {};
+  // A) vertical: header row "Câu | 101 | 102…", rows "1 | A | C…"
+  for (let h = 0; h < Math.min(rows.length, 15); h++) {
+    const r = rows[h] || [], cols = [];
+    r.forEach((v, j) => { const c = codeLike(v); if (c && j > 0) cols.push([j, c]); });
+    const qcol = r.findIndex(v => /^(cau|cau hoi|stt|so cau|cau so|question|q)$/.test(norm(v)));
+    if (cols.length && qcol >= 0) {
+      const tmp = {}; cols.forEach(([, c]) => tmp[c] = []);
+      for (const row of rows.slice(h + 1)) {
+        const q = parseInt((row || [])[qcol]); if (!(q >= 1 && q <= 50)) continue;
+        cols.forEach(([j, c]) => { tmp[c][q - 1] = letter((row || [])[j]) || '?'; });
+      }
+      Object.keys(tmp).forEach(c => { const a = Array.from(tmp[c], x => x || '?').join('').replace(/\?+$/, ''); if (a.replace(/\?/g, '').length) keys[c] = a; });
+      if (Object.keys(keys).length) return keys;
+    }
+  }
+  // B) horizontal: "Mã đề | 1 | 2 | 3…" header, rows "101 | A | B…"
+  for (let h = 0; h < Math.min(rows.length, 15); h++) {
+    const r = rows[h] || [];
+    const mcol = r.findIndex(v => /^ma de( thi)?$/.test(norm(v)));
+    if (mcol < 0) continue;
+    const qcols = []; r.forEach((v, j) => { const q = parseInt(v); if (j !== mcol && q >= 1 && q <= 50 && String(q) === String(v).trim()) qcols.push([j, q]); });
+    for (const row of rows.slice(h + 1)) {
+      const c = codeLike((row || [])[mcol]); if (!c) continue;
+      if (qcols.length) { const arr = []; qcols.forEach(([j, q]) => arr[q - 1] = letter(row[j]) || '?'); keys[c] = Array.from(arr, x => x || '?').join('').replace(/\?+$/, ''); }
+      else { const cell = (row || []).find((v, j) => j !== mcol && parseKey(v).length >= 5); if (cell) keys[c] = parseKey(cell); }
+    }
+    if (Object.keys(keys).length) return keys;
+  }
+  // C) any row: a code cell + a long ABCD string cell
+  for (const row of rows) {
+    const c = (row || []).map(codeLike).find(Boolean), cell = (row || []).find(v => !codeLike(v) && parseKey(v).length >= 5 && /^[\sABCDabcd\d\.\):,\-]+$/.test(v));
+    if (c && cell) keys[c] = parseKey(cell);
+  }
+  return keys;
+}
+function applyImportedKeys(keys, source){
+  const codes = Object.keys(keys); if (!codes.length) { toast('Không tìm thấy đáp án trong ' + source, 4000); return; }
+  editing.keysList = editing.keysList.filter(k => parseKey(k.text) || (k.made && !keys[k.made]));
+  codes.sort().forEach(c => { const ex = editing.keysList.find(k => k.made === c); if (ex) ex.text = keys[c]; else editing.keysList.push({ made: c, text: keys[c] }); });
+  editing.keysList = editing.keysList.filter(k => k.made || parseKey(k.text));
+  const maxLen = Math.max(...codes.map(c => keys[c].length));
+  if (maxLen > editing.numQ || (editing.keysList.length === codes.length && maxLen >= 5 && maxLen !== editing.numQ)) editing.numQ = Math.min(50, maxLen);
+  render();
+  toast(`Đã nhập ${codes.length} mã đề (${codes.join(', ')}) từ ${source} — thầy kiểm tra lại số câu.`, 4500);
+}
+$('#fileKeyXlsx').addEventListener('change', async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try {
+    const sheets = /\.(csv|txt)$/i.test(f.name) ? [{ rows: parseCSV(await f.text()) }] : await readXlsx(await f.arrayBuffer());
+    let keys = {}; for (const sh of sheets) { keys = keysFromRows(sh.rows); if (Object.keys(keys).length) break; }
+    applyImportedKeys(keys, 'file Excel');
+  } catch (err) { toast('Không đọc được file. Hãy dùng file .xlsx theo mẫu', 4000); }
+});
+$('#fileKeyPhoto').addEventListener('change', async e => {
+  const fs = [...e.target.files]; e.target.value = ''; if (!fs.length) return;
+  keyImportBusy = true; render();
+  try {
+    const imgs = []; for (const f of fs) imgs.push((await loadImage(f, 2000)).toDataURL('image/jpeg', 0.85));
+    const prompt = `Các ảnh là BẢNG ĐÁP ÁN trắc nghiệm của một bài kiểm tra (có thể có nhiều mã đề, có thể là bảng in, file Word chụp màn hình hoặc viết tay).
+Hãy đọc đáp án đúng (A, B, C hoặc D) của từng câu theo thứ tự câu 1, 2, 3… cho TỪNG mã đề.
+Câu không đọc được ghi "?". Nếu ảnh không ghi mã đề thì dùng "101".
+Chỉ trả về JSON: {"keys":[{"made":"101","answers":"ABCD..."}]}`;
+    const j = await gemini([{ text: prompt }].concat(imgs.map(d => ({ inline_data: { mime_type: 'image/jpeg', data: b64(d) } }))));
+    const keys = {}; (j.keys || []).forEach(k => { const c = String(k.made || '').replace(/\D/g, '') || '101'; const a = String(k.answers || '').toUpperCase().replace(/[^ABCD?]/g, ''); if (a.length) keys[c] = a; });
+    keyImportBusy = false; applyImportedKeys(keys, 'ảnh chụp');
+  } catch (err) { keyImportBusy = false; render(); toast(aiMsg(err), 5000); }
+});
+function downloadKeyTemplate(){
+  const n = editing ? editing.numQ : 40;
+  const rows = [['Câu', '101', '102', '103', '104']];
+  for (let i = 1; i <= n; i++) rows.push([i, '', '', '', '']);
+  const guide = [['HƯỚNG DẪN'], ['1. Sheet "Dap an": cột A là số câu; hàng 1 là mã đề (101, 102…). Thêm/bớt cột mã đề tùy ý.'], ['2. Điền A, B, C hoặc D vào ô tương ứng. Thêm hàng nếu bài nhiều hơn ' + n + ' câu (tối đa 50).'], ['3. Lưu file, gửi sang điện thoại, trong app bấm "Từ file Excel" và chọn file này.']];
+  download(buildXlsx([{ name: 'Dap an', rows, widths: [7, 8, 8, 8, 8] }, { name: 'Huong dan', rows: guide, widths: [90] }]), 'Mau_DapAn_' + n + 'cau.xlsx');
+  toast('Đã tải file mẫu vào mục Tải xuống');
 }
 function delTest(id){ const t = DB.tests.find(x => x.id === id); if (!confirm(`Xoá bài "${t.name}" và ${t.results.length} kết quả?`)) return; DB.tests = DB.tests.filter(x => x.id !== id); if (DB.cur === id) DB.cur = DB.tests.length ? DB.tests[DB.tests.length - 1].id : null; save(); render(); }
 
