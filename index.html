@@ -112,6 +112,7 @@ img.namethumb{display:block;height:24px;max-width:170px;border-radius:3px;border
 <input type="file" id="fileEssayCam" accept="image/*" capture="environment" class="hidden">
 <input type="file" id="fileEssayPick" accept="image/*" multiple class="hidden">
 <input type="file" id="fileBackup" accept=".json,application/json" class="hidden">
+<input type="file" id="fileClass" accept=".xlsx,.xls,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" class="hidden">
 <script>
 /* OMR core: sheet layout, printable SVG, and photo recognition.
    Works in browser (window.OMR) and Node (module.exports). */
@@ -1290,25 +1291,124 @@ function renderClasses(){
     const c = editingClass, list = parseStudents(c.text);
     return `<div class="card"><h2>${c.id ? 'Sửa lớp' : 'Lớp mới'}</h2>
       <label class="f">Tên lớp</label><input type="text" id="cName" value="${esc(c.name)}" placeholder="VD: 12AV1">
-      <label class="f">Danh sách học sinh — mỗi dòng một họ tên</label>
+      <div class="keybox" style="background:var(--pri2);border-color:#c6d8ea"><button class="btn sm" onclick="syncClassForm();$('#fileClass').click()">📂 Nhập từ file Excel</button>
+        <div class="muted" style="margin-top:6px">Chọn file danh sách lớp (.xlsx hoặc .csv). App tự tìm cột “Họ và tên” (hoặc 2 cột “Họ đệm” + “Tên”).</div>
+        ${importSheets && importSheets.length > 1 ? `<label class="f">File có nhiều sheet — chọn sheet</label><select onchange="useImportSheet(+this.value)">${importSheets.map((s, i) => `<option value="${i}" ${editingClass.sheetIdx === i ? 'selected' : ''}>${esc(s.name)} (${s.names.length} tên)</option>`).join('')}</select>` : ''}</div>
+      <label class="f">Danh sách học sinh — mỗi dòng một họ tên (có thể sửa trực tiếp)</label>
       <textarea id="cText" style="min-height:200px" placeholder="Nguyễn Văn An&#10;Trần Thị Bình&#10;…" oninput="clsPreview()">${esc(c.text)}</textarea>
       <div class="muted">Copy cột họ tên từ Excel/Word rồi dán vào. Số thứ tự ở đầu dòng (nếu có) sẽ tự bỏ.</div>
       <div id="cPrev" class="okbox">${list.length} học sinh</div>
       <div class="row" style="margin-top:10px"><button class="btn grow" onclick="saveClass()">Lưu lớp</button><button class="btn sec" onclick="editingClass=null;render()">Huỷ</button></div></div>`;
   }
-  let h = `<div class="card"><div class="row"><h2 class="grow" style="margin:0">Lớp học</h2><button class="btn sm" onclick="editingClass={id:null,name:'',text:''};render()">+ Lớp mới</button></div>
+  let h = `<div class="card"><div class="row"><h2 class="grow" style="margin:0">Lớp học</h2><button class="btn sm" onclick="importSheets=null;editingClass={id:null,name:'',text:''};render()">+ Lớp mới</button></div>
     <div class="muted" style="margin-top:6px">Có danh sách lớp thì AI khớp tên viết tay đúng chính tả và app báo em nào chưa nộp bài.</div>`;
   h += DB.classes.map(c => `<div class="keybox"><div class="row"><div class="grow"><b>${esc(c.name)}</b><div class="muted">${c.students.length} học sinh</div></div><button class="btn sm sec" onclick="editClass('${c.id}')">Sửa</button><button class="btn sm red" onclick="delClass('${c.id}')">Xoá</button></div></div>`).join('');
   return h + '</div>';
 }
+// ---------- Import names from Excel (.xlsx) / CSV ----------
+async function readZip(buf){
+  const dv = new DataView(buf); let e = buf.byteLength - 22;
+  while (e >= 0 && dv.getUint32(e, true) !== 0x06054b50) e--;
+  if (e < 0) throw new Error('notzip');
+  const n = dv.getUint16(e + 10, true); let off = dv.getUint32(e + 16, true); const files = {};
+  for (let i = 0; i < n; i++) {
+    const method = dv.getUint16(off + 10, true), csize = dv.getUint32(off + 20, true), nl = dv.getUint16(off + 28, true), el = dv.getUint16(off + 30, true), cl = dv.getUint16(off + 32, true), lho = dv.getUint32(off + 42, true);
+    files[new TextDecoder().decode(new Uint8Array(buf, off + 46, nl))] = { method, csize, lho }; off += 46 + nl + el + cl;
+  }
+  return { files, async text(name){
+    const f = files[name]; if (!f) return null;
+    const lnl = dv.getUint16(f.lho + 26, true), lel = dv.getUint16(f.lho + 28, true), data = new Uint8Array(buf, f.lho + 30 + lnl + lel, f.csize);
+    if (f.method === 0) return new TextDecoder().decode(data);
+    const out = await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer();
+    return new TextDecoder().decode(out);
+  } };
+}
+const xmlDoc = t => new DOMParser().parseFromString(t, 'application/xml');
+function colIdx(ref){ const m = /^([A-Z]+)/.exec(ref || ''); let n = 0; if (m) for (const ch of m[1]) n = n * 26 + ch.charCodeAt(0) - 64; return n - 1; }
+async function readXlsx(buf){
+  const z = await readZip(buf);
+  const ss = []; const sst = await z.text('xl/sharedStrings.xml');
+  if (sst) for (const si of xmlDoc(sst).getElementsByTagName('si')) ss.push([...si.getElementsByTagName('t')].map(t => t.textContent).join(''));
+  const wb = xmlDoc(await z.text('xl/workbook.xml')), rels = xmlDoc((await z.text('xl/_rels/workbook.xml.rels')) || '<r/>');
+  const relMap = {}; for (const r of rels.getElementsByTagName('Relationship')) relMap[r.getAttribute('Id')] = r.getAttribute('Target');
+  const sheets = [];
+  for (const sh of wb.getElementsByTagName('sheet')) {
+    const rid = sh.getAttribute('r:id') || sh.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
+    let target = relMap[rid] || ''; target = target.startsWith('/') ? target.slice(1) : 'xl/' + target.replace(/^\.\//, '');
+    const x = await z.text(target); if (!x) continue;
+    const rows = [];
+    for (const row of xmlDoc(x).getElementsByTagName('row')) {
+      const arr = [];
+      for (const c of row.getElementsByTagName('c')) {
+        const t = c.getAttribute('t'), v = c.getElementsByTagName('v')[0];
+        let val = '';
+        if (t === 's') val = ss[+(v && v.textContent)] || '';
+        else if (t === 'inlineStr') val = [...c.getElementsByTagName('t')].map(n => n.textContent).join('');
+        else val = v ? v.textContent : '';
+        arr[colIdx(c.getAttribute('r'))] = String(val).trim();
+      }
+      rows.push(arr);
+    }
+    sheets.push({ name: sh.getAttribute('name'), rows });
+  }
+  return sheets;
+}
+function parseCSV(text){
+  const sep = (text.split('\n')[0].match(/;/g) || []).length > (text.split('\n')[0].match(/,/g) || []).length ? ';' : (text.includes('\t') ? '\t' : ',');
+  return text.split(/\r?\n/).map(l => { const out = []; let cur = '', q = false; for (const ch of l) { if (ch === '"') q = !q; else if (ch === sep && !q) { out.push(cur.trim()); cur = ''; } else cur += ch; } out.push(cur.trim()); return out; });
+}
+const looksName = v => { v = String(v || '').trim(); if (v.length < 4 || v.length > 45 || !/^[\p{L} .'\-]+$/u.test(v)) return false; const w = v.split(/\s+/).length; return w >= 2 && w <= 6; };
+function namesFromRows(rows){
+  const H = r => norm(r || '');
+  let hdr = -1, nameCol = -1, hoCol = -1, tenCol = -1;
+  for (let i = 0; i < Math.min(rows.length, 20) && hdr < 0; i++) {
+    const r = rows[i] || [];
+    r.forEach((v, j) => {
+      const h = H(v);
+      if (/^(ho (va )?ten|ho ten|ho va ten hoc sinh|ten hoc sinh|hoc sinh|ho, ten)/.test(h) && nameCol < 0) { nameCol = j; hdr = i; }
+      else if (/^ho( dem| lot| va chu lot)?$/.test(h)) { hoCol = j; hdr = i; }
+      else if (/^ten$/.test(h)) tenCol = j;
+    });
+  }
+  let out = [];
+  if (nameCol >= 0) out = rows.slice(hdr + 1).map(r => (r || [])[nameCol]);
+  else if (hoCol >= 0 && tenCol >= 0) out = rows.slice(hdr + 1).map(r => [(r || [])[hoCol], (r || [])[tenCol]].filter(Boolean).join(' '));
+  else { // no header: pick the column with the most name-like cells
+    const cnt = {}; rows.forEach(r => (r || []).forEach((v, j) => { if (looksName(v)) cnt[j] = (cnt[j] || 0) + 1; }));
+    const best = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+    if (best != null) out = rows.map(r => (r || [])[best]);
+  }
+  return out.map(v => String(v || '').replace(/\s+/g, ' ').trim()).filter(looksName);
+}
+let importSheets = null;
+async function importClassFile(file){
+  try {
+    let sheets;
+    if (/\.(csv|txt)$/i.test(file.name)) sheets = [{ name: file.name.replace(/\.\w+$/, ''), rows: parseCSV(await file.text()) }];
+    else if (/\.xls$/i.test(file.name)) { toast('File .xls đời cũ: thầy mở bằng Excel → Lưu thành (Save As) → chọn .xlsx rồi nhập lại', 5000); return; }
+    else sheets = await readXlsx(await file.arrayBuffer());
+    importSheets = sheets.map(s => ({ name: s.name, names: namesFromRows(s.rows) })).filter(s => s.names.length);
+    if (!importSheets.length) { toast('Không tìm thấy cột họ tên trong file', 4000); return; }
+    importSheets.sort((a, b) => b.names.length - a.names.length);
+    useImportSheet(0);
+  } catch (e) { toast('Không đọc được file. Hãy chọn file Excel .xlsx', 4000); }
+}
+function useImportSheet(i){
+  const sh = importSheets[i]; syncClassForm();
+  editingClass.text = sh.names.join('\n');
+  if (!editingClass.name && /\d/.test(sh.name) && sh.name.length <= 12) editingClass.name = sh.name;
+  editingClass.sheetIdx = i; render(); toast(`Đã nhập ${sh.names.length} học sinh từ sheet "${sh.name}"`);
+}
+function syncClassForm(){ if ($('#cName')) editingClass.name = $('#cName').value; if ($('#cText')) editingClass.text = $('#cText').value; }
 function clsPreview(){ const n = parseStudents($('#cText').value); $('#cPrev').innerHTML = `${n.length} học sinh${n.length ? ` · ví dụ: <b>${esc(n[0].name)}</b>` : ''}`; }
-function editClass(id){ const c = DB.classes.find(x => x.id === id); editingClass = { id, name: c.name, text: c.students.map(s => s.name).join('\n') }; render(); }
+function editClass(id){ importSheets = null; const c = DB.classes.find(x => x.id === id); editingClass = { id, name: c.name, text: c.students.map(s => s.name).join('\n') }; render(); }
 function saveClass(){
   const name = $('#cName').value.trim(), students = parseStudents($('#cText').value);
   if (!name) { toast('Hãy nhập tên lớp'); return; }
   if (editingClass.id) { const c = DB.classes.find(x => x.id === editingClass.id); c.name = name; c.students = students; } else DB.classes.push({ id: uid(), name, students });
   editingClass = null; save(); toast('Đã lưu lớp ' + name); render();
 }
+$('#fileClass').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) importClassFile(f); });
 function delClass(id){ const c = DB.classes.find(x => x.id === id); if (!confirm('Xoá lớp ' + c.name + '?')) return; DB.classes = DB.classes.filter(x => x.id !== id); save(); render(); }
 
 // ================= SETTINGS =================
@@ -1322,12 +1422,12 @@ function renderSettings(){
     <div class="card"><h2>🤖 AI đọc chữ viết tay (Google Gemini)</h2>
     <div class="muted">Dùng để đọc tên học sinh và chấm phần tự luận. Cần có mạng khi dùng AI; phần trắc nghiệm vẫn chấm được khi không có mạng.</div>
     <label class="f">Khóa API Gemini</label>
-    <div class="row"><input type="password" id="aiKey" class="grow" style="flex:1" value="${esc(s.aiKey)}" placeholder="Dán khóa bắt đầu bằng AIza…" autocomplete="off"><button class="btn sm sec" onclick="const i=$('#aiKey');i.type=i.type==='password'?'text':'password'">👁</button></div>
+    <div class="row"><input type="text" id="aiKey" class="grow" style="flex:1;-webkit-text-security:disc" value="${esc(s.aiKey)}" placeholder="Dán khóa (dạng AQ.… hoặc AIza…)" autocomplete="off" autocapitalize="off" spellcheck="false" data-lpignore="true"><button class="btn sm sec" onclick="const i=$('#aiKey');i.style.webkitTextSecurity=i.style.webkitTextSecurity==='none'?'disc':'none'">👁</button></div>
     <div class="row" style="margin-top:8px"><button class="btn sm" onclick="saveKey()">Lưu khóa</button><button class="btn sm ai sec" onclick="testKey()">Kiểm tra kết nối</button></div>
     ${keyTest ? `<div class="${keyTest.startsWith('✅') ? 'okbox' : 'aibox'}">${esc(keyTest)}</div>` : ''}
     <label class="row" style="gap:8px;margin-top:10px"><input type="checkbox" ${s.aiAuto ? 'checked' : ''} onchange="DB.settings.aiAuto=this.checked;save()" style="width:20px;height:20px"> Tự động cho AI đọc tên ngay sau khi chụp phiếu</label>
     <details style="margin-top:10px"><summary class="muted">Cách lấy khóa Gemini miễn phí</summary><ol class="muted" style="padding-left:18px;margin:6px 0">
-      <li>Mở <b>aistudio.google.com/apikey</b>, đăng nhập bằng Gmail.</li><li>Bấm <b>Create API key</b> → copy khóa (dạng AIza…).</li><li>Dán vào ô trên → <b>Lưu khóa</b> → <b>Kiểm tra kết nối</b>.</li></ol>
+      <li>Mở <b>aistudio.google.com/apikey</b>, đăng nhập bằng Gmail.</li><li>Bấm <b>Create API key</b> → copy khóa (dạng AQ.… hoặc AIza…).</li><li>Dán vào ô trên → <b>Lưu khóa</b> → <b>Kiểm tra kết nối</b>.</li></ol>
       <div class="muted">Khóa chỉ lưu trong máy này. Gói miễn phí giới hạn số lượt mỗi phút/ngày; Google có thể dùng dữ liệu gói miễn phí để cải thiện dịch vụ.</div></details>
     <label class="f">Mô hình (mặc định tự chọn)</label><input type="text" id="aiModel" value="${esc(s.aiModel)}" onchange="DB.settings.aiModel=this.value.trim()||'gemini-flash-latest';save()"></div>
     <div class="card"><h2>🖨️ Phiếu trả lời</h2>
