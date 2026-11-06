@@ -1,0 +1,17 @@
+{
+  "name": "Chấm Bài – trắc nghiệm & tự luận",
+  "short_name": "Chấm Bài",
+  "description": "Chụp phiếu trả lời để chấm trắc nghiệm; AI đọc tên và chấm tự luận viết tay.",
+  "lang": "vi",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f6f9",
+  "theme_color": "#1d5c96",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
