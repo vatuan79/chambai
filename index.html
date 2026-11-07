@@ -1089,6 +1089,11 @@ function onBackOnline(){
 }
 // essay photos kept per result so AI can grade the whole class in one run
 const photoMem = {};
+const sheetMem = {};
+async function putSheet(id, url){ sheetMem[id] = url; if (storageMode === 'idb') { try { await idb.set('sheet:' + id, url); delete sheetMem[id]; } catch (e) {} } }
+async function getSheet(id){ if (sheetMem[id]) return sheetMem[id]; if (storageMode === 'idb') { try { return (await idb.get('sheet:' + id)) || null; } catch (e) {} } return null; }
+async function delSheet(id){ delete sheetMem[id]; if (storageMode === 'idb') { try { await idb.set('sheet:' + id, null); } catch (e) {} } }
+function sheetImage(canvas, H){ return cropRect(canvas, H, 0, 0, 210, 297, 5); }
 async function putPhotos(id, photos){ photoMem[id] = photos; if (storageMode === 'idb') { try { await idb.set('essay:' + id, photos); delete photoMem[id]; } catch (e) {} } }
 async function getPhotos(id){ if (photoMem[id]) return photoMem[id]; if (storageMode === 'idb') { try { return (await idb.get('essay:' + id)) || []; } catch (e) {} } return []; }
 async function delPhotos(id){ delete photoMem[id]; if (storageMode === 'idb') { try { await idb.set('essay:' + id, null); } catch (e) {} } }
@@ -1258,6 +1263,7 @@ function liveSave(r){
   const t = curTest(), kf = keyFor(t, r.made);
   const rec = { id: uid(), name: '', made: kf.made, answers: r.answers, nameImg: r.nameImg, essay: undefined, time: Date.now(),
     marks: Object.fromEntries(Object.entries(r.marks || {}).map(([q, m]) => [q, { type: m.type, cands: m.cands, picked: m.picked, resolved: m.resolved == null ? null : m.resolved, img: m.img || '' }])) };
+  try { if (r.canvas && r.res && r.res.H) { rec.hasSheet = true; putSheet(rec.id, sheetImage(r.canvas, r.res.H)); } } catch (e) {}
   t.results.push(rec); save();
   live.count++; live.lastId = rec.id; live.savedSig = r.made + '|' + r.answers; live.needClear = true; live.stable = 0; live.savedAt = Date.now(); live.lastSig = '';
   const g = grade(t, rec);
@@ -1308,6 +1314,8 @@ function saveReview(){
   const marks = {}; Object.keys(r.marks || {}).forEach(q => { const m = r.marks[q]; marks[q] = { type: m.type, cands: m.cands, picked: m.picked, resolved: m.resolved == null ? null : m.resolved, img: m.img || '' }; });
   const rec = { id: uid(), name, made: keyFor(t, r.made).made, answers: r.answers, nameImg: r.nameImg || old.nameImg || '', essay, marks, time: Date.now() };
   if (r.essay && r.essay.photos && r.essay.photos.length) { rec.essay.photos = r.essay.photos.length; putPhotos(rec.id, r.essay.photos); }
+  try { if (r.canvas && r.res && r.res.ok && r.res.H && r.res.side !== 'back') { rec.hasSheet = true; putSheet(rec.id, sheetImage(r.canvas, r.res.H)); }
+        else if (old.hasSheet && old.id) { rec.hasSheet = true; getSheet(old.id).then(u => { if (u) { putSheet(rec.id, u); delSheet(old.id); } }); } } catch (e) {}
   if (r.backNameImg) rec.back = { made: r.backMade, nameImg: r.backNameImg, name: null, madeMismatch: !!(r.backMade && t.keys[r.backMade] && r.backMade !== rec.made), warn: false };
   else if (old.back) rec.back = old.back;
   else if (old.essay && old.essay.photos && old.id) { rec.essay = rec.essay || {}; rec.essay.photos = old.essay.photos; movePhotos(old.id, rec.id); }
@@ -1354,7 +1362,7 @@ function renderResults(){
   const mx = t.maxScore + essayMax(t);
   const avg = sc.length ? r2(sc.reduce((a, b) => a + b, 0) / sc.length) : null;
   const noName = rows.filter(r => !r.name && r.nameImg).length, pendTL = rows.filter(r => r.tlPending).length;
-  let h = `<div class="card"><div class="row"><div class="grow"><b>${esc(t.name)}</b><div class="muted">${rows.length} bài · thang ${fmt(mx)}</div></div><button class="btn sm" onclick="exportXlsx()" ${rows.length ? '' : 'disabled'}>⬇️ Xuất Excel</button></div>
+  let h = `<div class="card"><div class="row"><div class="grow"><b>${esc(t.name)}</b><div class="muted">${rows.length} bài · thang ${fmt(mx)}</div></div><div style="display:flex;flex-direction:column;gap:6px"><button class="btn sm" onclick="exportXlsx()" ${rows.length ? '' : 'disabled'}>⬇️ Xuất Excel</button>${rows.some(r => r.hasSheet) ? `<button class="btn sm sec" onclick="downloadAllSheets()" ${zipBusy ? 'disabled' : ''}>${zipBusy ? '<span class="spin"></span> Đang gói…' : '🖼️ Tải ảnh cả lớp'}</button>` : ''}</div></div>
      <div class="stats" style="margin-top:10px"><div><b>${fmt(avg)}</b><span>Trung bình</span></div><div><b>${sc.length ? fmt(Math.max(...sc)) : '–'}</b><span>Cao nhất</span></div><div><b>${sc.length ? fmt(Math.min(...sc)) : '–'}</b><span>Thấp nhất</span></div><div><b>${sc.length ? Math.round(sc.filter(x => x / mx >= .5).length / sc.length * 100) + '%' : '–'}</b><span>Đạt ≥ 50%</span></div></div>
      ${(() => { const pendBk = (t.backs || []).filter(b => b.name == null).length; const tlReady = rows.filter(r => r.tlPending && r.essay && r.essay.photos).length + (t.backs || []).length, tlNoPhoto = Math.max(0, pendTL - tlReady);
         if (!noName && !tlReady && !pendBk && !bulkBusy) return tlNoPhoto ? `<div class="warnbox">${tlNoPhoto} bài chưa có ảnh tự luận — chạm vào bài, chọn “Chấm tự luận” để chụp.</div>` : '';
@@ -1368,6 +1376,7 @@ function renderResults(){
   if (resView === 'list') {
     const sorted = rows.slice().sort(resSort === 'score' ? (a, b) => (b.total || 0) - (a.total || 0) : (a, b) => nameSortKey(a.name).localeCompare(nameSortKey(b.name), 'vi'));
     h += `<div class="card" style="padding:6px 8px"><div class="row" style="justify-content:flex-end;padding:4px 4px 0"><span class="muted">Sắp xếp:</span><button class="btn sm ${resSort === 'name' ? '' : 'sec'}" onclick="resSort='name';render()">Tên</button><button class="btn sm ${resSort === 'score' ? '' : 'sec'}" onclick="resSort='score';render()">Điểm</button></div>
+      <div class="muted" style="padding:2px 4px">Chạm vào tên để xem điểm, ảnh bài làm (có đánh dấu đúng/sai) và tải ảnh.</div>
       <table><tr><th>Họ tên</th><th class="num">TN</th>${t.essay.on ? '<th class="num">TL</th>' : ''}<th class="num">Tổng</th></tr>
       ${sorted.map(r => `<tr class="click" onclick="openResult('${r.id}')"><td>${r.name ? esc(r.name) : (r.nameImg ? `<img class="namethumb" src="${r.nameImg}">` : '—')}<div class="muted" style="font-size:11.5px">đề ${esc(r.made)}${Object.keys(r.marks || {}).some(q => markNeedsReview(t, r, +q)) ? ' · <span style="color:var(--warn)">⚠️ cần xem câu tô 2 ô</span>' : ''}${r.back && (r.back.warn || r.back.madeMismatch) ? ` · <span style="color:var(--bad)">⚠️ mặt tự luận ${r.back.warn ? 'ghi tên “' + esc(r.back.name) + '”' : 'tô mã ' + esc(r.back.made)} — kiểm tra</span>` : ''}</div></td><td class="num">${fmt(r.tn)}</td>${t.essay.on ? `<td class="num">${r.tl == null ? '<span class="pill warn">chưa</span>' : fmt(r.tl)}</td>` : ''}<td class="num"><b>${fmt(r.total)}</b></td></tr>`).join('')}</table></div>`;
     const cls = classOf(t);
@@ -1396,6 +1405,70 @@ function renderUnpaired(t){
       <img class="nameimg" style="margin:6px 0" src="${b.nameImg}">
       <div class="row"><select class="grow" onchange="if(this.value)pairManual('${b.id}',this.value)"><option value="">— ghép vào bài của… —</option>${free.slice().sort((x, y) => (y.made === b.made) - (x.made === b.made) || nameSortKey(x.name).localeCompare(nameSortKey(y.name), 'vi')).map(r => `<option value="${r.id}">${esc(r.name || '(chưa có tên)')} · mã ${esc(r.made)}</option>`).join('')}</select><button class="btn sm red" onclick="dropBack('${b.id}')">Bỏ</button></div></div>`).join('');
   return h + `</div>`;
+}
+async function renderSheet(t, r){
+  const url = await getSheet(r.id); if (!url) return null;
+  const img = new Image(); await new Promise(ok => { img.onload = ok; img.onerror = ok; img.src = url; });
+  const k = img.width / 210, cv = document.createElement('canvas'); cv.width = img.width; cv.height = img.height;
+  const ctx = cv.getContext('2d'); ctx.drawImage(img, 0, 0);
+  const kf = keyFor(t, r.made), g = grade(t, r), rr = 2.7 * k;
+  const circ = (x, y, fill, stroke, w) => { ctx.beginPath(); ctx.arc(x * k, y * k, rr, 0, 7); if (fill) { ctx.fillStyle = fill; ctx.fill(); } if (stroke) { ctx.lineWidth = w || 3; ctx.strokeStyle = stroke; ctx.stroke(); } };
+  for (let q = 0; q < t.numQ; q++) {
+    const a = r.answers[q], key = kf ? kf.key[q] : '', m = r.marks && r.marks[q];
+    OMR.L.opts.forEach((o, oi) => {
+      const [x, y] = OMR.ansPos(q, oi);
+      const chosen = a === o || (a === '*' && m && m.cands.includes(o));
+      if (chosen) circ(x, y, a === '*' ? 'rgba(230,140,0,.45)' : (o === key ? 'rgba(30,160,80,.45)' : 'rgba(220,50,40,.5)'));
+      if (o === key) circ(x, y, null, '#1d5cd6', 3.5);
+    });
+    const [x0, y0] = OMR.ansPos(q, 0);
+    ctx.font = `bold ${2.6 * k}px Arial`; ctx.textAlign = 'right'; ctx.fillStyle = a === key ? '#1e8a4c' : '#c63b2f';
+    ctx.fillText(a === key ? '✓' : '✗', (x0 - 7.6) * k, (y0 + 1) * k);
+  }
+  // banner over the title area
+  ctx.fillStyle = 'rgba(255,255,255,.93)'; ctx.fillRect(20 * k, 17 * k, 170 * k, 16 * k);
+  ctx.strokeStyle = '#1d5c96'; ctx.lineWidth = 2; ctx.strokeRect(20 * k, 17 * k, 170 * k, 16 * k);
+  ctx.textAlign = 'left'; ctx.fillStyle = '#1d232b'; ctx.font = `bold ${4.2 * k}px Arial`;
+  ctx.fillText(`${r.name || '(chưa có tên)'} — Mã đề ${r.made}`, 23 * k, 23.5 * k);
+  ctx.font = `${3.4 * k}px Arial`; ctx.fillStyle = '#1d5c96';
+  ctx.fillText(`Trắc nghiệm: ${fmt(g.tn)} điểm (${g.correct}/${t.numQ} câu đúng)${t.essay.on ? ` · Tự luận: ${g.tl == null ? 'chưa chấm' : fmt(g.tl)} · Tổng: ${fmt(g.total)}` : ''}`, 23 * k, 29 * k);
+  ctx.font = `${2.6 * k}px Arial`; ctx.fillStyle = '#555'; ctx.textAlign = 'right';
+  ctx.fillText(`${t.name} · chấm ${new Date(r.time).toLocaleDateString('vi-VN')}`, 187 * k, 23.5 * k);
+  return cv.toDataURL('image/jpeg', 0.85);
+}
+let zipBusy = false;
+async function downloadAllSheets(){
+  const t = curTest(); const rows = t.results.filter(r => r.hasSheet).sort((a, b) => nameSortKey(a.name).localeCompare(nameSortKey(b.name), 'vi'));
+  if (!rows.length) { toast('Chưa có ảnh bài làm nào'); return; }
+  zipBusy = true; render();
+  const files = [], used = {};
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]; const u = await renderSheet(t, r); if (!u) continue;
+    const bin = Uint8Array.from(atob(u.split(',')[1]), c => c.charCodeAt(0));
+    let nm = `${String(i + 1).padStart(2, '0')}_${safeName(r.name || 'chua_co_ten')}_ma${r.made}`; used[nm] = (used[nm] || 0) + 1; if (used[nm] > 1) nm += '_' + used[nm];
+    files.push({ name: nm + '.jpg', data: bin });
+    const ph = r.essay && r.essay.photos ? await getPhotos(r.id) : [];
+    (ph || []).forEach((p2, k) => files.push({ name: `${nm}_tuluan${k + 1}.jpg`, data: Uint8Array.from(atob(p2.split(',')[1]), c => c.charCodeAt(0)) }));
+  }
+  const blob = zipStore(files); zipBusy = false; render();
+  download(new Blob([blob], { type: 'application/zip' }), `AnhBaiLam_${safeName(t.name)}.zip`);
+  toast(`Đã tải ${rows.length} ảnh bài làm`);
+}
+async function showSheet(id){
+  const t = curTest(), r = t.results.find(x => x.id === id); if (!r) return;
+  const out = await renderSheet(t, r); if (!out) { toast('Không còn ảnh bài làm của bài này'); return; }
+  const m = document.createElement('div'); m.className = 'modal'; m.style.alignItems = 'stretch';
+  m.innerHTML = `<div class="sheet" style="border-radius:0;max-height:100vh;height:100vh;display:flex;flex-direction:column;padding:10px">
+    <div class="row"><b class="grow">${esc(r.name || '(chưa có tên)')} · mã ${esc(r.made)}</b><button class="btn sm sec" data-x="zoom">🔍 Phóng to</button><button class="btn sm" data-x="save">⬇️ Lưu ảnh</button><button class="btn sm sec" data-x="close">Đóng</button></div>
+    <div class="muted" style="margin:4px 0">🟩 tô đúng · 🟥 tô sai · 🟧 tô 2 ô · ⭕ xanh dương = đáp án đúng</div>
+    <div style="flex:1;overflow:auto;border:1px solid var(--line);border-radius:8px;background:#ddd"><img id="sheetImg" src="${out}" style="width:100%;display:block"></div></div>`;
+  m.addEventListener('click', e => {
+    const x = e.target.dataset.x;
+    if (x === 'close') m.remove();
+    if (x === 'zoom') { const im = m.querySelector('#sheetImg'); const big = im.style.width === '220%'; im.style.width = big ? '100%' : '220%'; e.target.textContent = big ? '🔍 Phóng to' : '🔍 Thu nhỏ'; }
+    if (x === 'save') { fetch(out).then(r2 => r2.blob()).then(b => download(b, `BaiLam_${safeName(r.name || 'hocsinh')}_ma${r.made}.jpg`)); }
+  });
+  document.body.appendChild(m);
 }
 function questionStats(t, rows, made){
   const key = t.keys[made] || '', rs = rows.filter(r => (r.usedMade || r.made) === made), out = [];
@@ -1482,11 +1555,12 @@ function openResult(id){
     ${r.nameImg ? `<img class="nameimg" style="margin:8px 0" src="${r.nameImg}">` : ''}
     ${r.back ? `<div class="${r.back.warn || r.back.madeMismatch ? 'warnbox' : 'muted'}">Mặt tự luận${r.back.name ? ' ghi tên “' + esc(r.back.name) + '”' : ''} · mã đề ${esc(r.back.made)}${r.back.warn || r.back.madeMismatch ? ' — <b>không khớp mặt trước</b>, có thể bị ghép nhầm' : ''}</div><img class="nameimg" style="margin:6px 0" src="${r.back.nameImg}"><button class="btn sm red" data-x="unback">Gỡ mặt tự luận khỏi bài này</button>` : ''}
     <div class="muted" style="margin:4px 0 8px">${g.correct}/${t.numQ} câu trắc nghiệm đúng</div><div class="grid">${chips.join('')}</div>${es}
-    <div class="row" style="margin-top:14px">${t.essay.on ? `<button class="btn ai grow" data-x="essay">✍️ ${g.tl == null ? 'Chấm tự luận' : 'Sửa tự luận'}</button>` : ''}<button class="btn sec grow" data-x="edit">✏️ Sửa</button><button class="btn red" data-x="del">Xoá</button><button class="btn" data-x="close">Đóng</button></div></div>`;
+    <div class="row" style="margin-top:14px">${t.essay.on ? `<button class="btn ai grow" data-x="essay">✍️ ${g.tl == null ? 'Chấm tự luận' : 'Sửa tự luận'}</button>` : ''}${r.hasSheet ? `<button class="btn grow" data-x="sheet">🖼️ Xem ảnh bài làm</button>` : ''}<button class="btn sec grow" data-x="edit">✏️ Sửa</button><button class="btn red" data-x="del">Xoá</button><button class="btn" data-x="close">Đóng</button></div></div>`;
   m.addEventListener('click', e => {
     const x = e.target.dataset.x;
     if (e.target === m || x === 'close') m.remove();
-    if (x === 'del' && confirm('Xoá bài của ' + (r.name || 'học sinh này') + '?')) { t.results = t.results.filter(y => y.id !== id); delPhotos(id); save(); m.remove(); render(); }
+    if (x === 'del' && confirm('Xoá bài của ' + (r.name || 'học sinh này') + '?')) { t.results = t.results.filter(y => y.id !== id); delPhotos(id); delSheet(id); save(); m.remove(); render(); }
+    if (x === 'sheet') { showSheet(r.id); return; }
     if (x === 'unback' && confirm('Gỡ mặt tự luận (và điểm tự luận) khỏi bài này? Sau đó thầy quét lại mặt tự luận đúng.')) { r.back = null; r.essay = undefined; delPhotos(r.id); save(); m.remove(); render(); return; }
     if (x === 'edit' || x === 'essay') {
       m.remove();
