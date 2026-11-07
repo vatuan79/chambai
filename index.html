@@ -124,6 +124,7 @@ img.namethumb{display:block;height:24px;max-width:170px;border-radius:3px;border
 <input type="file" id="fileBackup" accept=".json,application/json" class="hidden">
 <input type="file" id="fileKeyXlsx" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" class="hidden">
 <input type="file" id="fileKeyPhoto" accept="image/*" multiple class="hidden">
+<input type="file" id="fileEssayKey" accept="image/*" multiple class="hidden">
 <input type="file" id="fileClass" accept=".xlsx,.xls,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" class="hidden">
 <script>
 /* OMR core: sheet layout, printable SVG, and photo recognition.
@@ -1052,7 +1053,7 @@ async function processFile(file, mode){
   if (res.ok && res.side === 'back' && mode === 'grade') {
     if (!t.essay.on) { toast('Đây là mặt tự luận, nhưng bài này không có phần tự luận', 3500); nextInQueue(); return; }
     const out = await attachBack(t, res, canvas);
-    toast(out.error || `📄 Đã ghép mặt tự luận vào bài #${out.idx}${out.target.name ? ' — ' + out.target.name : ''} (mã ${out.target.made})`, 3500);
+    toast(`📄 Đã lưu mặt tự luận (mã ${out.made}) — sẽ ghép theo tên ở tab Kết quả`, 3500);
     nextInQueue(); return;
   }
   if (!res.ok) review = { mode, canvas, res, error: res.error };
@@ -1108,21 +1109,50 @@ async function gradeEssay(){
 }
 // ================= BACK (essay) SIDE =================
 function pageImage(canvas, H){ return cropRect(canvas, H, 0, 0, 210, 297, 6); }
+// Back pages are stored as "pending" and paired later by mã đề + name (order does not matter).
 async function attachBack(t, res, canvas){
   const page = pageImage(canvas, res.H), bName = cropName(canvas, res.H);
-  const codes = Object.keys(t.keys).filter(k => t.keys[k]);
-  const made = /^\d+$/.test(res.made) && t.keys[res.made] ? res.made : null;
-  const free = t.results.filter(r => !r.back).sort((a, b) => a.time - b.time);
-  if (!free.length) return { error: 'Tất cả bài đã có mặt tự luận. Hãy quét mặt trắc nghiệm trước.' };
-  const target = (made && free.find(r => r.made === made)) || free[0];
-  const extra = (await getPhotos(target.id)) || [];
-  const photos = [page].concat(extra);
-  await putPhotos(target.id, photos);
-  target.back = { made: res.made, nameImg: bName, name: null, madeMismatch: !!(made && made !== target.made) || (!made && codes.length > 1), warn: false };
-  target.essay = Object.assign({ items: t.essay.items.map((it, i) => ({ label: it.label || 'Câu ' + (i + 1), max: +it.max || 0, score: '', transcript: '', comment: '' })), overall: '', graded: false, by: '' }, target.essay || {}, { photos: photos.length });
+  t.backs = t.backs || [];
+  const id = 'bk' + uid();
+  await putPhotos(id, [page]);
+  t.backs.push({ id, made: res.made, nameImg: bName, name: null, time: Date.now() });
   save();
-  return { target, idx: t.results.slice().sort((a, b) => a.time - b.time).indexOf(target) + 1 };
+  return { pending: true, n: t.backs.length, made: res.made };
 }
+function backFree(t){ return t.results.filter(r => !r.back); }
+async function pairBack(t, bk, r){
+  const ph = (await getPhotos(bk.id)) || [];
+  const extra = (await getPhotos(r.id)) || [];
+  const photos = ph.concat(extra);
+  await putPhotos(r.id, photos); await delPhotos(bk.id);
+  r.back = { made: bk.made, nameImg: bk.nameImg, name: bk.name, madeMismatch: !!(t.keys[bk.made] && bk.made !== r.made), warn: false };
+  r.essay = Object.assign({ items: t.essay.items.map((it, i) => ({ label: it.label || 'Câu ' + (i + 1), max: +it.max || 0, score: '', transcript: '', comment: '' })), overall: '', graded: false, by: '' }, r.essay || {}, { photos: photos.length });
+  t.backs = (t.backs || []).filter(x => x.id !== bk.id);
+}
+const nameSim = (a, b) => { a = norm(a); b = norm(b); if (!a || !b) return 0; return 1 - lev(a, b) / Math.max(a.length, b.length); };
+async function autoPairBacks(t){   // after names are read: match each pending back to a front by mã đề + name
+  let n = 0;
+  for (const bk of (t.backs || []).slice()) {
+    if (!bk.name) continue;
+    const pool = backFree(t).filter(r => r.name);
+    const sameMade = pool.filter(r => r.made === bk.made);
+    let best = null, bs = 0;
+    for (const r of (sameMade.length ? sameMade : pool)) { const v = nameSim(bk.name, r.name); if (v > bs) { bs = v; best = r; } }
+    if (best && bs >= 0.75) { await pairBack(t, bk, best); n++; }
+  }
+  save(); return n;
+}
+async function pairBacksByOrder(t){
+  const free = backFree(t).sort((a, b) => a.time - b.time), bks = (t.backs || []).slice().sort((a, b) => a.time - b.time);
+  let n = 0;
+  for (const bk of bks) { const r = free.find(x => !x.back && (!t.keys[bk.made] || x.made === bk.made)) || free.find(x => !x.back); if (!r) break; await pairBack(t, bk, r); n++; }
+  save(); render(); toast(`Đã ghép ${n} mặt tự luận theo thứ tự quét`);
+}
+async function pairManual(bkId, rid){
+  const t = curTest(), bk = (t.backs || []).find(x => x.id === bkId), r = t.results.find(x => x.id === rid);
+  if (!bk || !r) return; await pairBack(t, bk, r); save(); render(); toast('Đã ghép');
+}
+async function dropBack(bkId){ const t = curTest(); if (!confirm('Bỏ trang tự luận này?')) return; t.backs = (t.backs || []).filter(x => x.id !== bkId); await delPhotos(bkId); save(); render(); }
 
 // ================= LIVE SCAN (camera stays open, auto-save) =================
 const live = { on: false, stream: null, timer: null, lastSig: '', stable: 0, savedSig: '', needClear: false, count: 0, lastId: null, busy: false, paused: false, wake: null };
@@ -1139,7 +1169,7 @@ async function startLive(){
       <span>Giữ phiếu:</span><select id="lvHold" onchange="DB.settings.liveHold=+this.value;save()" style="width:auto;padding:4px 6px;font-size:13px">${[0.3, 0.6, 1, 1.5, 2, 3].map(v => `<option value="${v}" ${v == (DB.settings.liveHold ?? 0.6) ? 'selected' : ''}>${String(v).replace('.', ',')} giây</option>`).join('')}</select>
       <span>Nghỉ sau khi lưu:</span><select id="lvGap" onchange="DB.settings.liveGap=+this.value;save()" style="width:auto;padding:4px 6px;font-size:13px">${[0, 0.5, 1, 2, 3, 5].map(v => `<option value="${v}" ${v == (DB.settings.liveGap ?? 1) ? 'selected' : ''}>${String(v).replace('.', ',')} giây</option>`).join('')}</select></div>
     <div class="vwrap"><video id="liveVid" playsinline muted autoplay></video><canvas class="ov" id="liveOv"></canvas><div class="flash" id="liveFlash"></div><div class="msg" id="liveMsg">Đưa phiếu vào khung, thấy đủ 4 ô vuông đen…</div></div>
-    <div class="bot">${t.essay.on ? `<button class="btn sm sec" id="liveTL" onclick="liveEssay()" disabled>📄 Thêm trang giấy riêng cho bài vừa lưu</button>` : ''}<span class="muted" style="color:#ccc;font-size:12.5px;flex-basis:100%">Giữ máy cách phiếu ~30 cm, đủ sáng. Lưu xong máy rung — đặt phiếu tiếp theo.${t.essay.on ? ' Mặt tự luận: quét ngay sau mặt trước, hoặc quét hết mặt trước rồi lật cả xấp quét mặt sau theo đúng thứ tự — app tự nhận.' : ''}</span></div>`;
+    <div class="bot">${t.essay.on ? `<button class="btn sm sec" id="liveTL" onclick="liveEssay()" disabled>📄 Thêm trang giấy riêng cho bài vừa lưu</button>` : ''}<span class="muted" style="color:#ccc;font-size:12.5px;flex-basis:100%">Giữ máy cách phiếu ~30 cm, đủ sáng. Lưu xong máy rung — đặt phiếu tiếp theo.${t.essay.on ? ' Mặt tự luận: quét lúc nào, thứ tự nào cũng được — app ghép theo mã đề + họ tên.' : ''}</span></div>`;
   document.body.appendChild(d);
   const v = $('#liveVid'); v.srcObject = stream; live.stream = stream; live.on = true; live.paused = false;
   live.lastSig = ''; live.stable = 0; live.needClear = false; live.backCount = 0; live.count = 0;
@@ -1228,12 +1258,11 @@ async function liveBack(cv, res, sig){
   live.paused = true;
   const out = await attachBack(curTest(), res, cv);
   live.paused = false; live.savedSig = sig; live.needClear = true; live.savedAt = Date.now(); live.lastSig = '';
-  if (out.error) { if (navigator.vibrate) navigator.vibrate([80, 80, 80]); liveMsg(out.error, 'warn'); return; }
   live.backCount = (live.backCount || 0) + 1;
   if (navigator.vibrate) navigator.vibrate(120);
   const f = $('#liveFlash'); if (f) { f.style.opacity = 1; setTimeout(() => f.style.opacity = 0, 350); }
   const b = $('#liveBackCount'); if (b) b.textContent = live.backCount;
-  liveMsg(`📄 Mặt tự luận → bài #${out.idx}${out.target.name ? ' (' + out.target.name + ')' : ''} · mã ${out.target.made}${out.target.back.madeMismatch ? ' ⚠️ mã đề mặt sau khác!' : ''}`, out.target.back.madeMismatch ? 'warn' : 'ok');
+  liveMsg(`📄 Đã lưu mặt tự luận #${live.backCount} (mã ${out.made}) — AI sẽ ghép theo tên`, 'ok');
 }
 async function liveEssay(){
   const t = curTest(), r = t.results.find(x => x.id === live.lastId); if (!r) return;
@@ -1313,12 +1342,13 @@ function renderResults(){
   const noName = rows.filter(r => !r.name && r.nameImg).length, pendTL = rows.filter(r => r.tlPending).length;
   let h = `<div class="card"><div class="row"><div class="grow"><b>${esc(t.name)}</b><div class="muted">${rows.length} bài · thang ${fmt(mx)}</div></div><button class="btn sm" onclick="exportXlsx()" ${rows.length ? '' : 'disabled'}>⬇️ Xuất Excel</button></div>
      <div class="stats" style="margin-top:10px"><div><b>${fmt(avg)}</b><span>Trung bình</span></div><div><b>${sc.length ? fmt(Math.max(...sc)) : '–'}</b><span>Cao nhất</span></div><div><b>${sc.length ? fmt(Math.min(...sc)) : '–'}</b><span>Thấp nhất</span></div><div><b>${sc.length ? Math.round(sc.filter(x => x / mx >= .5).length / sc.length * 100) + '%' : '–'}</b><span>Đạt ≥ 50%</span></div></div>
-     ${(() => { const tlReady = rows.filter(r => r.tlPending && r.essay && r.essay.photos).length, tlNoPhoto = pendTL - tlReady;
-        if (!noName && !tlReady && !bulkBusy) return tlNoPhoto ? `<div class="warnbox">${tlNoPhoto} bài chưa có ảnh tự luận — chạm vào bài, chọn “Chấm tự luận” để chụp.</div>` : '';
+     ${(() => { const pendBk = (t.backs || []).filter(b => b.name == null).length; const tlReady = rows.filter(r => r.tlPending && r.essay && r.essay.photos).length + (t.backs || []).length, tlNoPhoto = Math.max(0, pendTL - tlReady);
+        if (!noName && !tlReady && !pendBk && !bulkBusy) return tlNoPhoto ? `<div class="warnbox">${tlNoPhoto} bài chưa có ảnh tự luận — chạm vào bài, chọn “Chấm tự luận” để chụp.</div>` : '';
         return `<div class="aibox"><b>🤖 AI đọc 1 lượt:</b> ${[noName ? noName + ' tên học sinh' : '', tlReady ? tlReady + ' bài tự luận' : ''].filter(Boolean).join(' + ')}
           ${bulkBusy ? `<div style="margin-top:6px"><span class="spin"></span> <span id="bulkProg">${esc(bulkProg)}</span> <span id="aiProg" class="muted">${esc(aiProgress)}</span></div><button class="btn sm red" style="margin-top:6px" onclick="bulkStop=true;cancelAI()">Dừng</button>`
             : `<div style="margin-top:6px"><button class="btn ai" onclick="bulkAI()" ${aiReady() ? '' : 'disabled'}>🤖 Bắt đầu đọc tất cả</button></div>${aiReady() ? '' : '<div class="muted">Cần nhập khóa Gemini ở Cài đặt.</div>'}`}
           ${tlNoPhoto ? `<div class="muted" style="margin-top:6px">${tlNoPhoto} bài chưa có ảnh tự luận.</div>` : ''}</div>`; })()}</div>
+     ${renderUnpaired(t)}
      <div class="seg"><button class="${resView === 'list' ? 'on' : ''}" onclick="resView='list';render()">Danh sách điểm</button><button class="${resView === 'stat' ? 'on' : ''}" onclick="resView='stat';render()">Thống kê câu TN</button></div>`;
   if (!rows.length) return h + `<div class="card muted">Chưa có bài nào. Vào tab <b>Chấm</b> để chụp phiếu.</div>`;
   if (resView === 'list') {
@@ -1340,6 +1370,18 @@ function renderResults(){
       ${st.map(q => `<tr><td>${q.q}</td><td><b>${q.key}</b></td><td class="num" style="color:${q.pct < 50 ? 'var(--bad)' : 'inherit'}">${q.pct}%</td>${['A', 'B', 'C', 'D'].map(o => `<td class="num" style="${o === q.key ? 'font-weight:700;color:var(--ok)' : ''}">${q.cnt[o]}</td>`).join('')}<td class="num">${q.cnt._}</td></tr>`).join('')}</table></div>`;
   }
   return h;
+}
+function renderUnpaired(t){
+  const bks = t.backs || []; if (!bks.length || bulkBusy) return '';
+  const read = bks.filter(b => b.name != null);
+  const free = backFree(t);
+  let h = `<div class="card" style="border-color:#f0d29d"><h2>📄 Mặt tự luận chưa ghép (${bks.length})</h2>`;
+  if (read.length < bks.length) h += `<div class="muted">Bấm <b>🤖 Bắt đầu đọc tất cả</b> để AI đọc tên và tự ghép. Không dùng AI thì chọn tay bên dưới, hoặc <button class="btn sm sec" onclick="pairBacksByOrder(curTest())">Ghép theo thứ tự quét</button></div>`;
+  else h += `<div class="muted">AI đã đọc tên nhưng chưa tìm được bài khớp — thầy chọn tay giúp.</div>`;
+  h += bks.map(b => `<div class="keybox"><div class="row"><span class="pill">mã ${esc(b.made)}</span>${b.name ? `<span class="muted">AI đọc: “${esc(b.name)}”</span>` : ''}</div>
+      <img class="nameimg" style="margin:6px 0" src="${b.nameImg}">
+      <div class="row"><select class="grow" onchange="if(this.value)pairManual('${b.id}',this.value)"><option value="">— ghép vào bài của… —</option>${free.slice().sort((x, y) => (y.made === b.made) - (x.made === b.made) || nameSortKey(x.name).localeCompare(nameSortKey(y.name), 'vi')).map(r => `<option value="${r.id}">${esc(r.name || '(chưa có tên)')} · mã ${esc(r.made)}</option>`).join('')}</select><button class="btn sm red" onclick="dropBack('${b.id}')">Bỏ</button></div></div>`).join('');
+  return h + `</div>`;
 }
 function questionStats(t, rows, made){
   const key = t.keys[made] || '', rs = rows.filter(r => (r.usedMade || r.made) === made), out = [];
@@ -1378,15 +1420,18 @@ async function bulkAI(){
     // names: 15 per request
     const todo = [];
     t.results.forEach(r => { if (!r.name && r.nameImg) todo.push({ id: r.id, img: r.nameImg, r, back: false }); if (r.back && r.back.nameImg && r.back.name == null) todo.push({ id: 'b:' + r.id, img: r.back.nameImg, r, back: true }); });
+    (t.backs || []).forEach(bk => { if (bk.name == null && bk.nameImg) todo.push({ id: bk.id, img: bk.nameImg, bk, pend: true }); });
     for (let i = 0; i < todo.length && !bulkStop; i += 15) {
       const chunk = todo.slice(i, i + 15);
       setBulk(`Đang đọc tên ${Math.min(i + chunk.length, todo.length)}/${todo.length}…`);
       const res = await aiReadNamesBatch(t, chunk.map(x => ({ id: x.id, img: x.img })));
       chunk.forEach(x => { const o = res[x.id]; if (!o) return; const nm = o.student ? o.student.name : o.raw;
-        if (x.back) { x.r.back.name = nm || ''; }
+        if (x.pend) { x.bk.name = nm || ''; }
+        else if (x.back) { x.r.back.name = nm || ''; }
         else if (nm && !t.results.find(y => y !== x.r && norm(y.name) === norm(nm))) { x.r.name = nm; okN++; } });
       save();
     }
+    if ((t.backs || []).length) { setBulk('Đang ghép mặt tự luận theo tên…'); await autoPairBacks(t); }
     t.results.forEach(r => { if (r.back && r.back.name && r.name) { const a = norm(r.back.name), b = norm(r.name); r.back.warn = 1 - lev(a, b) / Math.max(a.length, b.length, 1) < 0.7; } });
     save();
     // essays: one request per student
@@ -1558,7 +1603,10 @@ function renderTestEditor(){
     <button class="btn sm sec" style="margin-top:10px" onclick="syncEditor();editing.keysList.push({made:'',text:''});render()">+ Thêm mã đề</button>
     <h3 style="margin-top:18px">Phần tự luận</h3>
     <label class="row" style="gap:8px"><input type="checkbox" id="tEssay" ${es.on ? 'checked' : ''} onchange="syncEditor();editing.essay.on=this.checked;if(this.checked&&!editing.essay.items.length)editing.essay.items.push({label:'Câu 1',max:2,rubric:''});render()" style="width:20px;height:20px"> Bài có phần tự luận (AI đọc chữ viết tay và gợi ý điểm)</label>
-    ${es.on ? `<label class="row" style="gap:8px;margin-top:8px"><input type="checkbox" ${es.perMade ? 'checked' : ''} onchange="syncEditor();editing.essay.perMade=this.checked;render()" style="width:20px;height:20px"> Đề tự luận <b>khác nhau theo mã đề</b></label>
+    ${es.on ? `<div class="keybox" style="background:var(--aibg);border-color:#ddd2f0"><button class="btn sm ai" onclick="syncEditor();$('#fileEssayKey').click()" ${essayKeyBusy ? 'disabled' : ''}>📷 Chụp / chọn ảnh đáp án tự luận (AI)</button>
+        <div class="muted" style="margin-top:6px">Chụp trang đề + đáp án/hướng dẫn chấm phần tự luận (nhiều trang, nhiều mã đề cùng lúc đều được). AI tự điền tên câu, điểm và hướng dẫn chấm — thầy kiểm tra lại.</div>
+        ${essayKeyBusy ? `<div class="aibox"><span class="spin"></span> AI đang đọc đáp án tự luận… <span id="aiProg" class="muted">${esc(aiProgress)}</span><div style="margin-top:6px"><button class="btn sm red" onclick="cancelAI()">Huỷ</button></div></div>` : ''}</div>
+      <label class="row" style="gap:8px;margin-top:8px"><input type="checkbox" ${es.perMade ? 'checked' : ''} onchange="syncEditor();editing.essay.perMade=this.checked;render()" style="width:20px;height:20px"> Đề tự luận <b>khác nhau theo mã đề</b></label>
       ${es.perMade ? '<div class="muted">App lấy mã đề học sinh tô ở mặt trắc nghiệm để chấm tự luận theo đúng đề đó.</div>' : ''}
       ${es.items.map((it, i) => `<div class="essayitem"><div class="row"><div class="grow"><label class="f" style="margin-top:0">Tên câu</label><input type="text" data-el="${i}" value="${esc(it.label)}"></div><div style="width:90px"><label class="f" style="margin-top:0">Điểm tối đa</label><input type="number" step="0.25" min="0" data-ex="${i}" value="${it.max}" inputmode="decimal"></div></div>
         ${es.perMade ? editing.keysList.filter(k => k.made).map(k => `<label class="f">Mã đề <b>${esc(k.made)}</b> — đề bài + đáp án / hướng dẫn chấm</label><textarea data-erm="${i}" data-made="${esc(k.made)}" style="min-height:90px">${esc((it.rubricByMade || {})[k.made] || '')}</textarea>`).join('') || '<div class="warnbox">Hãy nhập mã đề ở phần trắc nghiệm trước.</div>'
@@ -1610,7 +1658,41 @@ function saveTest(){
   DB.cur = obj.id; editing = null; save(); toast('Đã lưu bài kiểm tra'); tab = 'scan'; render();
 }
 // ---------- answer-key import ----------
-let keyImportBusy = false;
+let keyImportBusy = false, essayKeyBusy = false;
+$('#fileEssayKey').addEventListener('change', async e => {
+  const fs = [...e.target.files]; e.target.value = ''; if (!fs.length || !editing) return;
+  if (!aiReady()) { toast('Cần nhập khóa Gemini ở Cài đặt', 3500); return; }
+  essayKeyBusy = true; render();
+  try {
+    const imgs = []; for (const f of fs) imgs.push((await loadImage(f, 1800)).toDataURL('image/jpeg', 0.82));
+    const codes = editing.keysList.map(k => k.made).filter(Boolean);
+    const prompt = `Các ảnh là ĐỀ BÀI và ĐÁP ÁN / HƯỚNG DẪN CHẤM phần TỰ LUẬN của một bài kiểm tra (có thể nhiều trang, có thể nhiều mã đề${codes.length ? ': ' + codes.join(', ') : ''}). Bỏ qua phần trắc nghiệm.
+Với TỪNG câu tự luận, lấy: số câu đúng như trên đề (vd "Câu 17"), điểm tối đa (số, dùng dấu chấm, vd 0.5), và "rubric" = đề bài của câu + đáp án đúng + cách cho điểm/trừ điểm (chép đầy đủ, giữ nguyên tiếng Anh nếu đề tiếng Anh).
+Nếu các mã đề có tự luận khác nhau thì tách theo từng mã đề; nếu dùng chung thì "made" để "".
+Chỉ trả về JSON: {"versions":[{"made":"","items":[{"label":"Câu 17","max":0.5,"rubric":"..."}]}]}`;
+    const j = await gemini([{ text: prompt }].concat(imgs.map(d => ({ inline_data: { mime_type: 'image/jpeg', data: b64(d) } }))));
+    const vs = (j.versions || []).filter(v => v.items && v.items.length);
+    if (!vs.length) throw new AIError('http', 'Không tìm thấy câu tự luận trong ảnh.');
+    const withMade = vs.filter(v => String(v.made || '').replace(/\D/g, ''));
+    const es = editing.essay; es.on = true;
+    if (withMade.length >= 2) {
+      const n = Math.max(...withMade.map(v => v.items.length)), base = withMade[0].items;
+      es.perMade = true;
+      es.items = Array.from({ length: n }, (_, i) => {
+        const b = base[i] || withMade.find(v => v.items[i]).items[i];
+        const rb = {}; withMade.forEach(v => { if (v.items[i]) rb[String(v.made).replace(/\D/g, '')] = String(v.items[i].rubric || ''); });
+        return { label: String(b.label || 'Câu ' + (i + 1)), max: +String(b.max).replace(',', '.') || 0, rubric: '', rubricByMade: rb };
+      });
+      withMade.forEach(v => { const c = String(v.made).replace(/\D/g, ''); if (c && !editing.keysList.find(k => k.made === c)) editing.keysList.push({ made: c, text: '' }); });
+    } else {
+      const v = withMade[0] || vs[0];
+      es.perMade = false;
+      es.items = v.items.map((it, i) => ({ label: String(it.label || 'Câu ' + (i + 1)), max: +String(it.max).replace(',', '.') || 0, rubric: String(it.rubric || ''), rubricByMade: {} }));
+    }
+    essayKeyBusy = false; render();
+    toast(`AI đã điền ${es.items.length} câu tự luận${es.perMade ? ' cho ' + withMade.length + ' mã đề' : ''} — thầy kiểm tra lại điểm và nội dung.`, 4500);
+  } catch (err) { essayKeyBusy = false; render(); toast(aiMsg(err), 5000); }
+});
 const codeLike = v => { const m = /^\s*(?:m[ãa]\s*(?:đ|d)[ềe]\s*[:\-]?\s*)?(\d{1,4})\s*$/i.exec(String(v || '')); return m ? m[1] : null; };
 const letter = v => { const m = /^\s*([ABCDabcd])\s*$/.exec(String(v || '')); return m ? m[1].toUpperCase() : null; };
 function keysFromRows(rows){
