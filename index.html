@@ -97,6 +97,11 @@ img.namethumb{display:block;height:24px;max-width:170px;border-radius:3px;border
 #live .msg{position:absolute;left:12px;right:12px;bottom:12px;text-align:center;font-size:16px;font-weight:600;padding:10px;border-radius:12px;background:#000a}
 #live .msg.ok{background:#1e8a4ccc}#live .msg.warn{background:#b86e00cc}
 #live .bot{padding:10px 12px calc(10px + env(safe-area-inset-bottom));display:flex;gap:8px;background:#0009;flex-wrap:wrap}
+#live .last{position:absolute;top:10px;right:10px;background:#fffffff2;color:#1d232b;border-radius:14px;padding:8px 14px;text-align:center;min-width:130px;box-shadow:0 4px 16px #0006;display:none}
+#live .last .sc{font-size:44px;font-weight:800;line-height:1;color:#1d5c96}
+#live .last .md{font-size:15px;font-weight:700}
+#live .last .sub{font-size:12.5px;color:#555}
+#live .prev{position:absolute;top:10px;left:10px;background:#000a;border-radius:10px;padding:6px 10px;font-size:12.5px;line-height:1.5;display:none}
 #live .flash{position:absolute;inset:0;border:10px solid #2ecc71;opacity:0;transition:opacity .15s;pointer-events:none}
 .hidden{display:none!important}
 .spin{display:inline-block;width:16px;height:16px;border:3px solid #6a3fb544;border-top-color:#6a3fb5;border-radius:50%;animation:sp .8s linear infinite;vertical-align:-3px}
@@ -1168,11 +1173,11 @@ async function startLive(){
     <div class="top" style="padding-top:0;font-size:13px;gap:6px;flex-wrap:wrap">
       <span>Giữ phiếu:</span><select id="lvHold" onchange="DB.settings.liveHold=+this.value;save()" style="width:auto;padding:4px 6px;font-size:13px">${[0.3, 0.6, 1, 1.5, 2, 3].map(v => `<option value="${v}" ${v == (DB.settings.liveHold ?? 0.6) ? 'selected' : ''}>${String(v).replace('.', ',')} giây</option>`).join('')}</select>
       <span>Nghỉ sau khi lưu:</span><select id="lvGap" onchange="DB.settings.liveGap=+this.value;save()" style="width:auto;padding:4px 6px;font-size:13px">${[0, 0.5, 1, 2, 3, 5].map(v => `<option value="${v}" ${v == (DB.settings.liveGap ?? 1) ? 'selected' : ''}>${String(v).replace('.', ',')} giây</option>`).join('')}</select></div>
-    <div class="vwrap"><video id="liveVid" playsinline muted autoplay></video><canvas class="ov" id="liveOv"></canvas><div class="flash" id="liveFlash"></div><div class="msg" id="liveMsg">Đưa phiếu vào khung, thấy đủ 4 ô vuông đen…</div></div>
+    <div class="vwrap"><video id="liveVid" playsinline muted autoplay></video><canvas class="ov" id="liveOv"></canvas><div class="flash" id="liveFlash"></div><div class="last" id="liveLast"></div><div class="prev" id="livePrev"></div><div class="msg" id="liveMsg">Đưa phiếu vào khung, thấy đủ 4 ô vuông đen…</div></div>
     <div class="bot">${t.essay.on ? `<button class="btn sm sec" id="liveTL" onclick="liveEssay()" disabled>📄 Thêm trang giấy riêng cho bài vừa lưu</button>` : ''}<span class="muted" style="color:#ccc;font-size:12.5px;flex-basis:100%">Giữ máy cách phiếu ~30 cm, đủ sáng. Lưu xong máy rung — đặt phiếu tiếp theo.${t.essay.on ? ' Mặt tự luận: quét lúc nào, thứ tự nào cũng được — app ghép theo mã đề + họ tên.' : ''}</span></div>`;
   document.body.appendChild(d);
   const v = $('#liveVid'); v.srcObject = stream; live.stream = stream; live.on = true; live.paused = false;
-  live.lastSig = ''; live.stable = 0; live.needClear = false; live.backCount = 0; live.count = 0;
+  live.lastSig = ''; live.stable = 0; live.needClear = false; live.backCount = 0; live.count = 0; live.hist = []; live.lastShown = '';
   try { if (navigator.wakeLock) live.wake = await navigator.wakeLock.request('screen'); } catch (e) {}
   await v.play().catch(() => {});
   liveLoop();
@@ -1241,6 +1246,14 @@ function liveHandle(cv, res){
   }
   liveSave(r);
 }
+function liveShowScore(t, rec, n){
+  const g = grade(t, rec), el = $('#liveLast'); if (!el) return;
+  live.hist = live.hist || []; if (live.lastShown) live.hist.unshift(live.lastShown);
+  live.lastShown = `#${n} · mã ${rec.made} · ${fmt(g.tn)}đ`;
+  el.innerHTML = `<div class="sub">Bài #${n}</div><div class="md">Mã đề ${esc(rec.made)}</div><div class="sc">${fmt(g.tn)}</div><div class="sub">${g.correct}/${t.numQ} câu đúng${t.essay.on ? ' · chưa có TL' : ''}</div>`;
+  el.style.display = 'block';
+  const pv = $('#livePrev'); if (pv && live.hist.length) { pv.innerHTML = live.hist.slice(0, 3).map(esc).join('<br>'); pv.style.display = 'block'; }
+}
 function liveSave(r){
   const t = curTest(), kf = keyFor(t, r.made);
   const rec = { id: uid(), name: '', made: kf.made, answers: r.answers, nameImg: r.nameImg, essay: undefined, time: Date.now(),
@@ -1253,6 +1266,7 @@ function liveSave(r){
   const c = $('#liveCount'); if (c) c.textContent = live.count;
   const b = $('#liveTL'); if (b) b.disabled = false;
   liveMsg(`✔ Đã lưu bài #${live.count} — mã ${rec.made} — TN ${fmt(g.tn)} điểm`, 'ok');
+  liveShowScore(t, rec, live.count);
 }
 async function liveBack(cv, res, sig){
   live.paused = true;
@@ -1301,7 +1315,7 @@ function saveReview(){
   const g = grade(t, rec);
   toast(`Đã lưu: ${name || '(chưa có tên)'} — ${fmt(g.total)} điểm${g.tlPending ? ' (chưa có TL)' : ''}`);
   review = null;
-  if (r.live && live.on) { live.savedSig = r.res ? (r.res.made + '|' + r.res.answers.slice(0, t.numQ)) : ''; live.count++; const c = $('#liveCount'); if (c) c.textContent = live.count; live.lastId = rec.id; const b = $('#liveTL'); if (b) b.disabled = false; liveResume(); return; }
+  if (r.live && live.on) { live.savedSig = r.res ? (r.res.made + '|' + r.res.answers.slice(0, t.numQ)) : ''; live.count++; const c = $('#liveCount'); if (c) c.textContent = live.count; live.lastId = rec.id; const b = $('#liveTL'); if (b) b.disabled = false; liveResume(); liveShowScore(t, rec, live.count); return; }
   if (queue.length) nextInQueue(); else render();
 }
 $('#fileCam').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) { queue = []; processFile(f, 'grade'); } });
