@@ -1249,8 +1249,8 @@ function liveHandle(cv, res){
 function liveShowScore(t, rec, n){
   const g = grade(t, rec), el = $('#liveLast'); if (!el) return;
   live.hist = live.hist || []; if (live.lastShown) live.hist.unshift(live.lastShown);
-  live.lastShown = `#${n} · mã ${rec.made} · ${fmt(g.tn)}đ`;
-  el.innerHTML = `<div class="sub">Bài #${n}</div><div class="md">Mã đề ${esc(rec.made)}</div><div class="sc">${fmt(g.tn)}</div><div class="sub">${g.correct}/${t.numQ} câu đúng${t.essay.on ? ' · chưa có TL' : ''}</div>`;
+  live.lastShown = `#${n} · mã ${rec.made} · ${fmt(g.tn)} điểm`;
+  el.innerHTML = `<div class="sub">Bài #${n} · Mã đề <b>${esc(rec.made)}</b></div><div class="md" style="margin-top:4px">${t.essay.on ? 'Điểm trắc nghiệm' : 'ĐIỂM'}</div><div class="sc">${fmt(g.tn)}<span style="font-size:20px"> điểm</span></div><div class="sub">(${g.correct}/${t.numQ} câu đúng${t.essay.on ? ' · tự luận chấm sau' : ''})</div>`;
   el.style.display = 'block';
   const pv = $('#livePrev'); if (pv && live.hist.length) { pv.innerHTML = live.hist.slice(0, 3).map(esc).join('<br>'); pv.style.display = 'block'; }
 }
